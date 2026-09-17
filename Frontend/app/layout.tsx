@@ -2,14 +2,19 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { LayoutShell } from "@/components/layout-shell";
 
-const rawSiteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://namtheg.vercel.app";
-const SITE_URL = /^https?:\/\//i.test(rawSiteUrl) ? rawSiteUrl : `https://${rawSiteUrl}`;
+// Canonical/OG base URL: og:image and og:url are resolved against it, so it must be
+// a host that actually serves this app, or link previews lose their image.
+const FALLBACK_SITE_URL = "https://namtheg.khalid-ai.dev";
+const rawSiteUrl = process.env.NEXT_PUBLIC_SITE_URL || FALLBACK_SITE_URL;
+const SITE_URL = (
+  /^https?:\/\//i.test(rawSiteUrl) ? rawSiteUrl : `https://${rawSiteUrl}`
+).replace(/\/+$/, "");
 
 function getMetadataBase(): URL {
   try {
     return new URL(SITE_URL);
   } catch {
-    return new URL("https://namtheg.vercel.app");
+    return new URL(FALLBACK_SITE_URL);
   }
 }
 

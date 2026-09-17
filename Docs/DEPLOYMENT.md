@@ -70,7 +70,7 @@ modal deploy app/deploy/inference_app.py
 2. **Set Root Directory to `Frontend`.** (Required because the repository is a monorepo).
 3. Add Environment Variables (Production + Preview):
    - `BACKEND_URL` = Your Modal backend URL from Step 1 (e.g. `https://<workspace>--namtheg-backend-fastapi-app.modal.run`)
-   - `NEXT_PUBLIC_SITE_URL` = your production domain, e.g. `https://namtheg.vercel.app`
+   - `NEXT_PUBLIC_SITE_URL` (optional, defaults to `https://namtheg.khalid-ai.dev`) = the production domain. Link-preview images are served from this host, so it must actually serve the app.
 4. Deploy (or click "Redeploy" if already connected to update `BACKEND_URL`).
 
 No frontend code changes are needed: `Frontend/next.config.ts` automatically proxies `/api/backend/*` to `BACKEND_URL`.
