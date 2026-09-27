@@ -1,11 +1,10 @@
-import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
 from app import storage
 
 
 def detect_problem_type(run_id: str, target: str) -> dict:
-    df = pd.read_csv(storage.dataset_path(run_id))
+    df = storage.load_dataset(run_id)
     if target not in df.columns:
         raise ValueError(f"Target column '{target}' not found in dataset.")
 

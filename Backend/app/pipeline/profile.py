@@ -1,10 +1,8 @@
-import pandas as pd
-
 from app import storage
 
 
 def profile_dataset(run_id: str) -> dict:
-    df = pd.read_csv(storage.dataset_path(run_id))
+    df = storage.load_dataset(run_id)
     columns = []
     for col in df.columns:
         s = df[col]
