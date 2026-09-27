@@ -1,22 +1,33 @@
-"""Downloadable deliverables: the cleaned dataset (CSV) and the model package (zip)."""
-import inspect
+"""Downloadable deliverables: the cleaned dataset (CSV), the model package
+(zip), and for forecasting the forecast itself (CSV)."""
 import io
 import json
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
 
 from app import storage
-from app.training.core import load_bundle
 
 CLEANED_CSV = "cleaned.csv"
 MODEL_PACKAGE = "model_package.zip"
+FORECAST_CSV = "forecast.csv"
+RUNTIME_SOURCE = Path(__file__).resolve().parent.parent / "training" / "runtime.py"
 
-PREDICT_PY = '''"""Batch predictions with the exported Namtheg model.
+PREDICT_PY = '''"""Predictions with an exported Namtheg model.
 
     pip install -r requirements.txt
+
+    # classification, regression, clustering: a CSV with the columns in metadata.json -> feature_cols
     python predict.py input.csv predictions.csv
 
-input.csv needs the columns listed under "feature_cols" in metadata.json.
+    # forecasting: the next steps after the training data, or after your own
+    # history (a CSV with timestamp, value, and series_id for several series)
+    python predict.py --forecast forecast.csv [history.csv]
+
+    # image classification
+    python predict.py --images predictions.csv photo1.jpg photo2.png ...
 """
 import sys
 
@@ -24,145 +35,172 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from runtime import load_bundle
 
-# __LOAD_BUNDLE__
+
+def main(argv):
+    # joblib runs code while loading: only load model files from a source you trust.
+    bundle = load_bundle(joblib.load("model.joblib"))
+    model, task, labels = bundle["model"], bundle["task"], bundle.get("class_labels")
+
+    if argv and argv[0] == "--forecast":
+        history = pd.read_csv(argv[2]) if len(argv) > 2 else None
+        model.forecast(history).to_csv(argv[1], index=False)
+        print(f"wrote forecast to {argv[1]}")
+        return
+    if argv and argv[0] == "--images":
+        out, files = argv[1], argv[2:]
+        proba = model.predict_proba(files)
+        frame = pd.DataFrame({"image": files, "prediction": [labels[i] for i in proba.argmax(axis=1)]})
+        for i, label in enumerate(labels):
+            frame[f"probability_{label}"] = proba[:, i]
+        frame.to_csv(out, index=False)
+        print(f"wrote {len(frame)} predictions to {out}")
+        return
+
+    df = pd.read_csv(argv[0])
+    missing = [c for c in model.feature_cols if c not in df.columns]
+    if missing:
+        sys.exit(f"input is missing columns: {missing}")
+    pred = np.asarray(model.predict(df)).ravel()
+    out = df.copy()
+    if task == "clustering":
+        out["cluster"] = pred  # -1 means no cluster (outlier)
+    elif labels:
+        out["prediction"] = [labels[int(p)] for p in pred]
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(df)
+            for i, label in enumerate(labels):
+                out[f"probability_{label}"] = proba[:, i]
+    else:
+        out["prediction"] = pred
+    out.to_csv(argv[1], index=False)
+    print(f"wrote {len(out)} rows to {argv[1]}")
 
 
-# joblib runs code while loading: only load model files from a source you trust.
-bundle = load_bundle(joblib.load("model.joblib"))
-model, features, labels = bundle["model"], bundle["feature_cols"], bundle["class_labels"]
-
-df = pd.read_csv(sys.argv[1])
-missing = [c for c in features if c not in df.columns]
-if missing:
-    sys.exit(f"input is missing columns: {missing}")
-
-X = df[features]
-pred = np.asarray(model.predict(X)).ravel()
-out = df.copy()
-if labels:
-    out["prediction"] = [labels[int(p)] for p in pred]
-    proba = model.predict_proba(X)
-    for i, label in enumerate(labels):
-        out[f"probability_{label}"] = proba[:, i]
-else:
-    out["prediction"] = pred
-out.to_csv(sys.argv[2], index=False)
-print(f"wrote {len(out)} predictions to {sys.argv[2]}")
+if __name__ == "__main__":
+    main(sys.argv[1:])
 '''
 
-README_MD = """# {model_name} model for `{target}`
+README_MD = """# {model_name} model ({task})
 
 Trained by Namtheg on {trained_on} ({created_at}). Run `{run_id}`.
 
 | File | What it is |
 |------|------------|
-| `model.joblib` | The fitted preprocessing plus the model's weights. `predict.py` rebuilds the full pipeline from it: raw columns in, predictions out. |
-| `{weights_file}` | The trained model's weights in {weights_format_desc} format, loadable without Python pickles. |
-| `metadata.json` | Features and dtypes, class labels, preprocessing, hyperparameters, metrics, library versions. |
-| `predict.py` | Batch predictions from a CSV. |
-| `requirements.txt` | Exact library versions the model was trained with. |
-
-## Use the pipeline
+| `model.joblib` | The model in portable form: fitted preprocessing plus weights, or a pretrained model reference. |
+| `runtime.py` | Loads `model.joblib` and predicts; the same code Namtheg's live endpoint runs. |
+| `predict.py` | Command-line predictions (see its docstring). |
+| `metadata.json` | Inputs, classes, settings, metrics, and exact library versions. |
+| `requirements.txt` | The libraries this model needs, at the versions it was trained with. |
+{extra_files}
+## Use it
 
 ```bash
 pip install -r requirements.txt
-python predict.py input.csv predictions.csv
+{usage}
 ```
 
-`joblib.load` executes code, so only load `model.joblib` from a source you trust. The weights
-file below needs no pickle at all.
-
-## Use the weights directly
-
-{weights_usage}
-
-The weights expect the *encoded* features, in the order given by
-`metadata.json` → `preprocessing.encoded_feature_names`: numeric columns pass
-through unchanged; `one_hot` columns expand to one 0/1 column per listed
-category (binary columns keep a single column for the second category);
-`ordinal` columns become the index of the value in its category list, or -1
-for a category not seen in training.
-{labels_note}
+`joblib.load` executes code, so only load `model.joblib` from a source you trust.
+{notes}
 ## Performance
 
-Selection metric: **{metric}**. Cross-validated: **{cv_mean}**. Held-out test set: **{test_score}**.
-Feature-blind baseline ({baseline_name}): {baseline_cv} (CV).
+Selection metric: **{metric}** ({direction}). {evaluation}: **{score}**.{baseline}
 """
 
-WEIGHTS_USAGE = {
-    "xgboost-json": (
-        "```python\nimport xgboost as xgb\nbooster = xgb.Booster()\nbooster.load_model(\"model_weights.json\")\n"
-        "pred = booster.predict(xgb.DMatrix(encoded_features))\n```"
-    ),
-    "catboost-cbm": (
-        "```python\nfrom catboost import CatBoost\nmodel = CatBoost()\nmodel.load_model(\"model_weights.cbm\")\n"
-        "pred = model.predict(encoded_features)\n```"
-    ),
+USAGE = {
+    "classification": "python predict.py input.csv predictions.csv",
+    "regression": "python predict.py input.csv predictions.csv",
+    "clustering": "python predict.py input.csv clusters.csv   # adds a 'cluster' column (-1 = outlier)",
+    "forecasting": "python predict.py --forecast forecast.csv            # next steps after the training data\n"
+                   "python predict.py --forecast forecast.csv history.csv  # or after your own history",
+    "image_classification": "python predict.py --images predictions.csv photo1.jpg photo2.png",
+}
+EVALUATION = {
+    "classification": "Cross-validated", "regression": "Cross-validated", "clustering": "On the training data",
+    "forecasting": "Rolling backtest", "image_classification": "Validation split",
 }
 
 
-def export_cleaned_csv(run_id: str) -> str:
-    """The dataset exactly as the models received it: after the analyst's and
-    the pipeline's column drops, with rows missing the target removed. It holds
-    only real rows; class weighting happens inside training, not in the data.
+def export_cleaned_csv(run_id: str, task: str) -> str:
+    """The data exactly as the models received it: after column drops, with
+    rows missing the target removed; for clustering with each row's cluster,
+    for forecasting as the regular series, for images the image manifest.
+    Only real rows: class weighting happens inside training, not in the data.
     UTF-8 with BOM so Excel shows Arabic and other non-Latin text correctly."""
-    storage.load_engineered(run_id).to_csv(storage.run_dir(run_id) / CLEANED_CSV, index=False, encoding="utf-8-sig")
+    frame = storage.load_dataset(run_id) if task == "image_classification" else storage.load_engineered(run_id)
+    if task == "clustering":
+        labels_path = storage.artifact_path(run_id, "cluster_labels.npy")
+        if labels_path.exists():
+            frame = frame.assign(cluster=np.load(labels_path, allow_pickle=True))
+    frame.to_csv(storage.run_dir(run_id) / CLEANED_CSV, index=False, encoding="utf-8-sig")
     storage.persist(run_id, CLEANED_CSV)
     return CLEANED_CSV
 
 
+def _requirements(meta: dict) -> str:
+    """Only the libraries this model needs. Read from model_meta.json: the
+    backend never unpickles a model (its Python and library versions differ
+    from the training images')."""
+    kind, text, versions = meta["estimator_kind"], meta.get("text"), meta.get("library_versions") or {}
+    pkgs = ["numpy", "pandas", "scikit-learn", "joblib"]
+    if kind == "xgboost-json":
+        pkgs.append("xgboost")
+    if kind == "catboost-cbm":
+        pkgs.append("catboost")
+    if kind in ("torch", "timm", "chronos") or text:
+        pkgs.append("torch")
+    if kind == "timm":
+        pkgs += ["timm", "pillow"]
+    if kind == "chronos":
+        pkgs.append("chronos-forecasting")
+    if text:
+        pkgs.append("sentence-transformers")
+    return "\n".join(f"{p}=={versions[p]}" if p in versions else p for p in pkgs) + "\n"
+
+
 def build_model_package(run_id: str, result: dict) -> str:
     meta = storage.read_json(run_id, "model_meta.json")
+    task = meta.get("task") or result.get("problem_type")
     extra = result["extra"]
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     hardware = (meta.get("hardware") or {}).get("gpu", "GPU")
-    versions = meta["library_versions"]
-    library = "xgboost" if meta["weights_format"] == "xgboost-json" else "catboost"
-    requirements = "\n".join(
-        f"{pkg}=={versions[pkg]}" for pkg in ("numpy", "pandas", "scikit-learn", "joblib", library)
-    ) + "\n"
-    labels = meta.get("class_labels")
+    lower_better = result.get("higher_is_better") is False
+    base = extra.get("baseline") or {}
     metadata = {
-        **meta,
-        "run_id": run_id,
-        "created_at": created_at,
-        "selection_metric": result["score_metric"],
-        "metrics": {
-            "cv_mean": extra.get("cv_mean"),
-            "test": extra.get("test_metrics"),
-            "train": extra.get("train_metrics"),
-            "baseline": extra.get("baseline"),
-        },
+        **meta, "run_id": run_id, "created_at": created_at, "task": task,
+        "selection_metric": result["score_metric"], "higher_is_better": not lower_better,
+        "metrics": {k: extra.get(k) for k in ("cv_mean", "test_score", "test_metrics", "train_metrics",
+                                              "backtest_metrics", "cluster_metrics", "baseline")
+                    if extra.get(k) is not None},
         "imbalance_handling": extra.get("imbalance_applied"),
     }
+    extra_files = ""
+    if meta.get("weights_file"):
+        extra_files += f"| `{meta['weights_file']}` | The trained model's learned parameters on their own (no pickle). |\n"
+    if task == "forecasting":
+        extra_files += f"| `{FORECAST_CSV}` | The forecast produced at training time, with 80% intervals. |\n"
     readme = README_MD.format(
-        model_name=meta["model_name"],
-        target=meta["target"],
-        trained_on=hardware,
-        created_at=created_at,
-        run_id=run_id,
-        weights_file=meta["weights_file"],
-        weights_format_desc="XGBoost JSON" if library == "xgboost" else "CatBoost native (.cbm)",
-        weights_usage=WEIGHTS_USAGE[meta["weights_format"]],
-        labels_note=(
-            f"\nClass predictions are indexes into `class_labels` in metadata.json: {labels}.\n" if labels else ""
-        ),
-        metric=result["score_metric"],
-        cv_mean=extra.get("cv_mean"),
-        test_score=extra.get("test_score"),
-        baseline_name=(extra.get("baseline") or {}).get("name", "n/a"),
-        baseline_cv=(extra.get("baseline") or {}).get("cv_mean", "n/a"),
+        model_name=meta["model_name"], task=task.replace("_", " "), trained_on=hardware, created_at=created_at,
+        run_id=run_id, extra_files=extra_files, usage=USAGE[task],
+        notes=(f"\nClass predictions are indexes into `class_labels` in metadata.json: {meta['class_labels']}.\n"
+               if meta.get("class_labels") else ""),
+        metric=result["score_metric"], direction="lower is better" if lower_better else "higher is better",
+        evaluation=EVALUATION[task], score=result["accuracy_score"],
+        baseline=(f" Feature-blind baseline ({base['name']}): {base.get('cv_mean')}." if base.get("name") else ""),
     )
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
         z.write(storage.artifact_path(run_id, "model.joblib"), "model.joblib")
-        z.write(storage.artifact_path(run_id, meta["weights_file"]), meta["weights_file"])
+        z.write(RUNTIME_SOURCE, "runtime.py")
+        if meta.get("weights_file"):
+            z.write(storage.artifact_path(run_id, meta["weights_file"]), meta["weights_file"])
+        if task == "forecasting":
+            z.write(storage.artifact_path(run_id, FORECAST_CSV), FORECAST_CSV)
         z.writestr("metadata.json", json.dumps(metadata, indent=2, default=str))
-        # Same loader the inference endpoint uses, so the package needs nothing from Namtheg.
-        z.writestr("predict.py", PREDICT_PY.replace("# __LOAD_BUNDLE__", inspect.getsource(load_bundle)))
-        z.writestr("requirements.txt", requirements)
+        z.writestr("predict.py", PREDICT_PY)
+        z.writestr("requirements.txt", _requirements(meta))
         z.writestr("README.md", readme)
     (storage.run_dir(run_id) / MODEL_PACKAGE).write_bytes(buf.getvalue())
     storage.persist(run_id, MODEL_PACKAGE)
