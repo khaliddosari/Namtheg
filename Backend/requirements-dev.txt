@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest>=8.0
+openpyxl>=3.1  # writes .xlsx fixtures in tests; the app reads Excel with python-calamine
+# The GPU trainer's libraries, at the versions pinned in app/training/gpu_app.py,
+# so tests can exercise app/training/core.py (on CPU, as a test harness only).
+xgboost==3.4.1
+catboost==1.2.10
+optuna==5.0.0
