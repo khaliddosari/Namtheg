@@ -21,7 +21,7 @@ npm run dev
 |------|------|------------------------------------------|-------------|
 | Classification / regression | a target column | XGBoost (depth-wise and leaf-wise), CatBoost, SVM, KNN, logistic/ridge regression | CV accuracy, macro F1 (imbalanced), or R² |
 | Clustering | no target column | K-Means, HDBSCAN, DBSCAN, Spectral | silhouette |
-| Forecasting | a date column + numeric target | Chronos-2 (pretrained, zero-shot), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags | rolling-backtest MASE |
+| Forecasting (planned for removal, see [Docs/PRD.md](../Docs/PRD.md) §1) | a date column + numeric target | Chronos-2 (pretrained, zero-shot), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags | rolling-backtest MASE |
 | Image classification | a `.zip` with one folder per class | ConvNeXt-Tiny, EfficientNet-B0, ResNet-50 (ImageNet-pretrained, fine-tuned) | validation accuracy / macro F1 |
 
 Free-text columns (reviews, notes) in any table are embedded with a pretrained multilingual encoder (Arabic included) instead of being dropped as identifiers.
@@ -153,7 +153,7 @@ per run. This keeps Modal's free tier viable when many people use the project:
 
 - One image build (cached after first deploy), not one per upload.
 - One deployment slot used forever, not one per upload.
-- Models live in a `modelforge-models` Modal Volume — uploading a new one is
+- Models live in a `modelforge-models` Modal Volume, so uploading a new one is
   just a file copy, no `modal deploy` per run.
 
 ### One-time setup (do this once per workspace)
@@ -165,8 +165,8 @@ per run. This keeps Modal's free tier viable when many people use the project:
    MODAL_WORKSPACE=your-modal-username
    ```
 
-   Find it by running `modal app list` — it's the workspace name shown at the
-   top, or the prefix of any existing app URL (`{workspace}--…modal.run`).
+   Find it by running `modal app list`: it's the workspace name shown at the
+   top, or the prefix of any existing app URL (`{workspace}--...modal.run`).
 
 3. Deploy the shared inference app **once**:
 
@@ -176,8 +176,8 @@ per run. This keeps Modal's free tier viable when many people use the project:
 
    Modal builds the image (sklearn + pandas + fastapi pinned to the versions
    in `IMAGE_PIN`) and registers the `modelforge-inference` app. Subsequent
-   user "Deploy" clicks just upload model files into the shared volume — no
-   image build, no new app.
+   user "Deploy" clicks just upload model files into the shared volume, with
+   no image build and no new app.
 
 ### When to re-deploy `inference_app.py`
 
@@ -202,7 +202,7 @@ never has to know the URL or worry about CORS.
 
 ## Notes & known gaps
 
-- **GPU paths are unverified on a real GPU.** Modal refuses every GPU function until the account has a payment method; the images are verified to build and load their weights, and the engines are tested on CPU, but no H200 run has happened yet.
+- **Forecasting is planned for removal.** See [Docs/PRD.md](../Docs/PRD.md) §1 and §8. It works and is tested, but do not build new shared infrastructure that assumes it will stay.
 - **Dataset contents reach the LLM provider.** The analyst sees 3 sample values per column and whatever its sandbox code prints. Calls use `store=False`, but no PII redaction exists yet.
 - **Grounding checks numbers, not attribution.** A justification can't cite a number the pipeline didn't compute, but it could attach a real number to the wrong claim.
 - **Forecasting is univariate.** Covariates aren't used yet (their future values would have to be supplied); Chronos-2 is used zero-shot, not fine-tuned.

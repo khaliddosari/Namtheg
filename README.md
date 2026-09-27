@@ -1,6 +1,6 @@
 # Namtheg: Agentic AutoML 🛠️
 
-Namtheg is a premium, end-to-end agentic AutoML platform. It automates the entire machine learning pipeline—from raw data upload (CSV, Excel, Parquet, JSON), profiling, target selection, and feature engineering to model training, evaluation plotting, and instant serverless API deployment.
+Namtheg is a premium, end-to-end agentic AutoML platform. It automates the entire machine learning pipeline, from raw data upload (CSV, Excel, Parquet, JSON), profiling, target selection, and feature engineering to model training, evaluation plotting, and instant serverless API deployment.
 
 An **analyst agent (GPT-6 Sol, with DeepSeek V4 Flash as fallback)** investigates each dataset the way a data scientist would, running its own pandas code in an isolated, network-blocked sandbox. Every number it reports is checked against what the pipeline actually computed.
 
@@ -52,7 +52,7 @@ Upload a table (CSV, Excel, Parquet, JSON) or a `.zip` of images, then choose wh
 |------|--------------------------------------------------------|
 | **Predict a column** (classification / regression) | XGBoost, CatBoost, SVM, KNN, logistic / ridge regression |
 | **Find groups** (clustering, no target) | K-Means, HDBSCAN, DBSCAN, Spectral |
-| **Forecast over time** | Chronos-2 (pretrained), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags |
+| **Forecast over time** (planned for removal, see [Docs/PRD.md](Docs/PRD.md) §1) | Chronos-2 (pretrained), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags |
 | **Image classification** | ConvNeXt, EfficientNet, ResNet (pretrained, fine-tuned) |
 
 Every run: the upload becomes a typed DataFrame once; deterministic checks (leakage, duplicates, imbalance, time-series gaps) run first; for tables an analyst agent (GPT-6 Sol) investigates with code in an isolated sandbox; imbalance is handled before modelling; models train as a background job on GPUs with early stopping and pruned Optuna search, next to a naive baseline; free-text columns are embedded with a pretrained multilingual encoder; and the written summary may only cite numbers the pipeline computed. Downloads: the cleaned data (CSV), the model package (weights, `predict.py`), and forecasts.
@@ -145,8 +145,8 @@ Import the repo at [vercel.com/new](https://vercel.com/new), **set the Root Dire
 
 ### 3. Serverless Predictors on Modal
 When a user clicks "Deploy to Modal" on their successfully trained model:
-- The backend leverages **Modal** serverless volumes (`namtheg-models`) and the shared app (`namtheg-inference`).
-- **Zero-cold-start uploads**: The model is saved directly to a mounted persistent volume rather than redeploying containers.
+- The backend leverages **Modal** serverless volumes (`modelforge-models`) and the shared app (`modelforge-inference`).
+- **No redeploy per model**: the trained model is saved directly to a mounted persistent volume rather than rebuilding a container for each upload.
 - Interactive serverless prediction endpoints are served dynamically!
 
 #### One-Time Modal Setup:
