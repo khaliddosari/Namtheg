@@ -181,6 +181,13 @@ def write_status(run_id: str, status: str, **extra) -> None:
     write_json(run_id, "status.json", current)
 
 
+def update_status(run_id: str, **fields) -> None:
+    """Merge fields into the run status without changing the status itself."""
+    current = read_json(run_id, "status.json") or {}
+    current.update(fields)
+    write_json(run_id, "status.json", current)
+
+
 def read_status(run_id: str) -> dict:
     return read_json(run_id, "status.json") or {"status": "unknown"}
 

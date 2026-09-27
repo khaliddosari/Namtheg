@@ -1,25 +1,29 @@
-"""Modal ASGI deployment entrypoint for the Namtheg FastAPI backend.
+"""Modal deployment of the Namtheg backend: the HTTP API plus a job function.
 
-Deploy to Modal with:
+Deploy with:
     modal deploy app/deploy/backend_app.py
 
 Or test locally with live reload:
     modal serve app/deploy/backend_app.py
 
-This provides:
-- Serverless scale-to-zero when idle, fast <2s wake-up
-- Persistent storage via Modal Volume (mounted at /storage)
-- $30/month free compute credits on Modal
-- 2 vCPU and 2GB+ RAM to avoid 512MB OOM crashes on ML pipelines
+- `fastapi_app` serves the HTTP API. Every request is short: starting a run
+  only spawns a job and returns.
+- `run_job` executes one run end to end in its own container, detached from
+  any HTTP request, so runs are bounded by JOB_TIMEOUT_SECONDS rather than a
+  request timeout. It waits on the GPU training service (app/training/gpu_app.py).
+- Both mount the same Volume at /storage; the API reloads it on reads so it
+  sees the job's progress.
 """
 from pathlib import Path
+
 import modal
+
+from app.jobs import JOB_APP_NAME, JOB_FUNCTION_NAME, JOB_TIMEOUT_SECONDS
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_PATH = BACKEND_DIR / ".env"
 REQ_PATH = BACKEND_DIR / "requirements.txt"
 
-# Define container image with all backend dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install_from_requirements(str(REQ_PATH))
@@ -32,7 +36,7 @@ storage_volume = modal.Volume.from_name("modelforge-storage", create_if_missing=
 # Unconditionally define Secret so local and remote container definitions match exactly
 secret = modal.Secret.from_dotenv(path=str(ENV_PATH))
 
-app = modal.App("namtheg-backend", image=image)
+app = modal.App(JOB_APP_NAME, image=image)
 
 
 @app.function(
@@ -41,9 +45,8 @@ app = modal.App("namtheg-backend", image=image)
     secrets=[secret],
     cpu=2.0,
     memory=2048,
-    # Runs execute as background tasks inside this function and wait on the
-    # GPU trainer (up to its own 30 min timeout), so allow a full hour.
-    timeout=3600,
+    # Requests are short now; the long ones are uploads of large files.
+    timeout=900,
     scaledown_window=300,
 )
 @modal.asgi_app()
@@ -52,3 +55,24 @@ def fastapi_app():
     os.environ["STORAGE_DIR"] = "/storage"
     from app.main import app as _fastapi_app
     return _fastapi_app
+
+
+@app.function(
+    name=JOB_FUNCTION_NAME,
+    image=image,
+    volumes={"/storage": storage_volume},
+    secrets=[secret],
+    cpu=2.0,
+    memory=4096,
+    timeout=JOB_TIMEOUT_SECONDS,
+    retries=0,
+)
+def run_job(run_id: str, spec: dict) -> None:
+    import os
+    os.environ["STORAGE_DIR"] = "/storage"
+    from app import storage
+    from app.agent.orchestrator import run_agent
+
+    # Recorded here too: the API's own write of the call id can race with this job's first status write.
+    storage.update_status(run_id, executor="modal", call_id=modal.current_function_call_id())
+    run_agent(run_id, spec)
