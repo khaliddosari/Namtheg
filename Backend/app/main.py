@@ -102,7 +102,9 @@ def _check_extension(filename: str | None) -> str:
 async def upload_dataset(file: UploadFile = File(...)) -> dict:
     """Store the raw upload, convert it once to the run's dataset (a typed
     Parquet DataFrame, or an image manifest for zips), and return a preview.
-    Files over 30 MB go through /uploads/direct instead."""
+    The frontend always prefers /uploads/direct (straight to R2, any size);
+    this is only the fallback for when the backend has no R2 configured, so
+    it's capped at 30 MB."""
     ext = _check_extension(file.filename)
     run_id = storage.new_run_id()
     raw = storage.raw_upload_path(run_id, ext)
@@ -112,8 +114,8 @@ async def upload_dataset(file: UploadFile = File(...)) -> dict:
             while chunk := await file.read(1024 * 1024):
                 total_bytes += len(chunk)
                 if total_bytes > MAX_UPLOAD_BYTES:
-                    raise HTTPException(413, "File too large for a direct upload (30 MB). Larger files upload "
-                                             "straight to storage when R2 is configured.")
+                    raise HTTPException(413, "File too large (30 MB cap without R2 configured). Set R2_* in "
+                                             "Backend/.env to accept uploads of any size.")
                 f.write(chunk)
         report = await run_in_threadpool(_ingest, run_id, raw, file.filename)
     except HTTPException:
@@ -131,10 +133,13 @@ async def upload_dataset(file: UploadFile = File(...)) -> dict:
 
 @app.post("/uploads/direct")
 def start_direct_upload(req: DirectUploadRequest) -> dict:
-    """Large files skip the frontend proxy: returns a time-limited URL the
-    browser PUTs the file to (R2), then /uploads/{run_id}/complete ingests it."""
+    """The primary upload path, whatever the file's size: returns a
+    time-limited URL the browser PUTs the file straight to in R2, skipping the
+    backend and the frontend proxy entirely; /uploads/{run_id}/complete then
+    ingests it. 409 when this backend has no R2 configured — the frontend
+    falls back to the (30 MB-capped) /upload proxy in that case."""
     if not r2.enabled():
-        raise HTTPException(409, "Direct uploads need R2 storage; upload files up to 30 MB instead.")
+        raise HTTPException(409, "Direct uploads need R2 storage, which is not configured on this backend.")
     ext = _check_extension(req.filename)
     if req.size > MAX_DIRECT_UPLOAD_BYTES:
         raise HTTPException(413, "File too large. Maximum size is 2 GB.")

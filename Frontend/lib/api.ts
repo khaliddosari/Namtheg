@@ -107,12 +107,22 @@ export function downloadUrl(runId: string, kind: DownloadKind): string {
   return `${BASE}/runs/${runId}/download/${kind}`;
 }
 
-// Files up to this size go through the frontend proxy; larger ones are PUT
-// straight to storage with a short-lived URL (needs R2 on the backend).
-export const PROXY_UPLOAD_LIMIT = 30 * 1024 * 1024;
+// Every upload PUTs straight to R2 from the browser, whatever its size — the
+// backend and the frontend proxy never see the raw bytes. The one exception:
+// if this backend has no R2 configured, /uploads/direct answers 409 and we
+// fall back to the old proxy upload (≤30 MB) so local dev without R2 still works.
+class R2NotConfiguredError extends Error {}
 
 export async function uploadCSV(file: File): Promise<UploadResponse> {
-  if (file.size > PROXY_UPLOAD_LIMIT) return uploadDirect(file);
+  try {
+    return await uploadDirect(file);
+  } catch (e) {
+    if (e instanceof R2NotConfiguredError) return uploadViaProxy(file);
+    throw e;
+  }
+}
+
+async function uploadViaProxy(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${BASE}/upload`, { method: "POST", body: form });
@@ -126,6 +136,7 @@ async function uploadDirect(file: File): Promise<UploadResponse> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename: file.name, size: file.size }),
   });
+  if (res.status === 409) throw new R2NotConfiguredError(await res.text());
   if (!res.ok) throw new Error(await res.text());
   const { run_id, upload_url } = await res.json();
   const put = await fetch(upload_url, { method: "PUT", body: file });
