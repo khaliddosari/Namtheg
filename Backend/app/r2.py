@@ -93,6 +93,19 @@ def exists(run_id: str, name: str) -> bool:
         return False
 
 
+def presigned_upload_url(run_id: str, name: str) -> str | None:
+    """Time-limited URL the browser PUTs a file to, so large uploads skip the
+    backend and the frontend proxy. The bucket needs a CORS rule allowing PUT
+    from the site's origin."""
+    if not enabled():
+        return None
+    return _s3().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": settings.r2_bucket, "Key": object_key(run_id, name)},
+        ExpiresIn=settings.r2_url_ttl_seconds,
+    )
+
+
 def presigned_download_url(run_id: str, name: str, filename: str) -> str | None:
     """Time-limited URL that downloads the object as `filename`."""
     if not enabled():
