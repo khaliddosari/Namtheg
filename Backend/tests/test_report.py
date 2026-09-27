@@ -2,7 +2,9 @@ from app.agent.report import template_justification, ungrounded_numbers, write_j
 from app.llm import AssistantTurn
 
 FACTS = {
-    "model": {"name": "RandomForest", "metric": "r2", "cv_score": 0.8734, "test_score": 0.8612},
+    "task": "regression",
+    "model": {"name": "RandomForest", "metric": "r2", "score": 0.8734, "test_score": 0.8612,
+              "higher_is_better": True},
     "baseline": {"name": "Mean of target", "cv_mean": -0.0021},
     "rows_used": 1338,
     "critical_findings": [{"detail": "This column alone predicts the target with cross-validated R2 0.9912."}],
@@ -54,3 +56,22 @@ def test_template_is_always_grounded_and_flags_weak_models():
     text = template_justification(weak)
     assert "does not meaningfully beat" in text
     assert ungrounded_numbers(text, weak) == []
+
+
+def test_template_states_direction_for_error_metrics():
+    facts = {"task": "forecasting", "model": {"name": "TCN", "metric": "mase", "score": 1.08,
+                                              "higher_is_better": False},
+             "baseline": {"name": "Seasonal naive", "cv_mean": 0.9}, "beats_baseline": False}
+    text = template_justification(facts)
+    assert "rolling-backtest mase of 1.0800" in text and "lower is better" in text
+    assert "does not meaningfully beat" in text and ungrounded_numbers(text, facts) == []
+
+
+def test_clustering_template_never_claims_verified_segments():
+    from app.agent.report import silhouette_guide
+
+    facts = {"task": "clustering", "model": {"name": "K-Means", "metric": "silhouette", "score": 0.31},
+             "silhouette_guide": silhouette_guide(0.31)}
+    text = template_justification(facts)
+    assert "weak cluster structure" in text and "not verified segments" in text
+    assert ungrounded_numbers(text, facts) == []

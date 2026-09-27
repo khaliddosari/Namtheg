@@ -36,6 +36,8 @@ class FakeS3:
         return {}
 
     def generate_presigned_url(self, op, Params, ExpiresIn):
+        if op == "put_object":
+            return f"https://r2.example/{Params['Key']}?upload&expires={ExpiresIn}"
         return f"https://r2.example/{Params['Key']}?expires={ExpiresIn}&cd={Params['ResponseContentDisposition']}"
 
 
@@ -109,3 +111,25 @@ def test_imbalance_assessment_thresholds():
     assert skewed["detected"] and skewed["ratio"] == 4.0
     assert skewed["strategy"] == "balanced_class_weights" and skewed["selection_metric"] == "f1_macro"
     assert imbalance.assess(pd.Series([1.0, 2.0]), "regression")["applies"] is False
+
+
+def test_large_files_upload_straight_to_r2(fake_r2):
+    """The browser PUTs to a presigned URL; /complete pulls the file and ingests it."""
+    client = TestClient(fastapi_app)
+    csv = INSURANCE_CSV.read_bytes()
+    r = client.post("/uploads/direct", json={"filename": "big.csv", "size": len(csv)})
+    assert r.status_code == 200, r.text
+    run_id, url = r.json()["run_id"], r.json()["upload_url"]
+    assert url.startswith(f"https://r2.example/test/runs/{run_id}/raw/source.csv?upload")
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 409  # nothing uploaded yet
+
+    fake_r2.objects[f"test/runs/{run_id}/raw/source.csv"] = csv  # what the browser's PUT does
+    r = client.post(f"/uploads/{run_id}/complete")
+    assert r.status_code == 200 and r.json()["n_rows"] == 1338
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 409  # only once
+    assert client.post("/uploads/direct", json={"filename": "x.pdf", "size": 10}).status_code == 400
+
+
+def test_direct_upload_needs_r2():
+    client = TestClient(fastapi_app)
+    assert client.post("/uploads/direct", json={"filename": "big.csv", "size": 10}).status_code == 409
