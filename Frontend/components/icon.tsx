@@ -38,6 +38,8 @@ const MAP: Record<string, string> = {
   description: "fa-file-csv",
   delete: "fa-trash",
   download: "fa-download",
+  table_view: "fa-table",
+  deployed_code: "fa-cube",
 
   // status
   check_circle: "fa-circle-check",

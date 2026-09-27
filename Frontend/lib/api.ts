@@ -46,7 +46,7 @@ export interface FeatureImportance {
 export interface TuningTrial {
   trial: number;
   parameters: string;
-  score: number;
+  score: number | null; // null when the trial failed
   result: string;
 }
 
@@ -64,6 +64,10 @@ export interface ResultExtra {
   all_models?: ModelScore[];
   top_features?: FeatureImportance[];
   tuning_trials?: TuningTrial[];
+  train_score?: number; // selection metric on the training split
+  test_score?: number; // selection metric on the held-out test split
+  test_metrics?: Record<string, number>;
+  hardware?: { gpu?: string };
 }
 
 export interface RunResult {
@@ -78,6 +82,15 @@ export interface RunResult {
   model_name?: string;
   extra?: ResultExtra;
   error?: string;
+  downloads?: DownloadKind[];
+}
+
+export type DownloadKind = "cleaned_csv" | "model";
+
+// A plain link: the backend streams the file, or redirects to a short-lived
+// R2 URL when R2 storage is configured.
+export function downloadUrl(runId: string, kind: DownloadKind): string {
+  return `${BASE}/runs/${runId}/download/${kind}`;
 }
 
 export async function uploadCSV(file: File): Promise<UploadResponse> {

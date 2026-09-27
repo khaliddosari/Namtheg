@@ -8,6 +8,9 @@ import { cn } from "@/lib/utils";
 import { Brand } from "@/components/brand";
 import { Icon } from "@/components/icon";
 
+// Must match SUPPORTED_EXTENSIONS in Backend/app/data/ingest.py.
+const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet", ".json", ".jsonl"];
+
 const VERIFY_STEPS = [
   "Reading CSV byte stream into client buffer...",
   "Validating comma-separated schemas and structural delimiters...",
@@ -53,8 +56,9 @@ export default function UploadPage() {
   };
 
   const handleFile = useCallback((f: File) => {
-    if (!f.name.endsWith(".csv")) {
-      setError("Only .csv files are supported right now.");
+    const ext = f.name.slice(f.name.lastIndexOf(".")).toLowerCase();
+    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+      setError(`Unsupported file type. Accepted: ${ACCEPTED_EXTENSIONS.join(", ")}`);
       return;
     }
     const MAX_SIZE = 30 * 1024 * 1024;  // 30 MB cap
@@ -198,7 +202,7 @@ export default function UploadPage() {
               <input
                 id="csv-input-main"
                 type="file"
-                accept=".csv"
+                accept={ACCEPTED_EXTENSIONS.join(",")}
                 className="sr-only"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
               />

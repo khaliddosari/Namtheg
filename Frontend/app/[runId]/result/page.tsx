@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  downloadUrl,
   getResult,
   getStatus,
   plotUrl,
@@ -25,6 +26,14 @@ const FONT_EMBED_URLS = [
 // Built once and reused across exports — the inlined webfont CSS is large and
 // identical every time, so there's no reason to refetch it per click.
 let fontEmbedCSSCache: string | null = null;
+
+// Selection metrics the trainer can report (imbalanced targets use macro F1).
+const METRIC_LABELS: Record<string, { short: string; long: string }> = {
+  accuracy: { short: "Accuracy", long: "Cross-Validation Accuracy" },
+  f1_macro: { short: "Macro F1", long: "Cross-Validation Macro F1" },
+  r2: { short: "R²", long: "R² Regression Score" },
+};
+const metricLabel = (metric: string) => METRIC_LABELS[metric] ?? { short: metric, long: metric };
 
 /* ─── Metric card ── */
 /* ─── Combined Accuracy + Feature Importance card ── */
@@ -261,7 +270,7 @@ function TuningResultsCard({
         <div>
           <h3 className="text-xl sm:text-[28px] leading-tight font-bold tracking-tight text-on-background">Hyperparameter Tuning</h3>
           <p className="text-xs text-on-surface-variant mt-1.5 font-mono">
-            Agentic optimization loop · {tuningTrials.length} trial{tuningTrials.length !== 1 ? "s" : ""} on <strong className="text-primary">{modelName}</strong>
+            Bayesian search (Optuna) · {tuningTrials.length} trial{tuningTrials.length !== 1 ? "s" : ""} on <strong className="text-primary">{modelName}</strong>
           </p>
         </div>
         <span className={cn(
@@ -287,7 +296,7 @@ function TuningResultsCard({
             <span className="text-base font-bold text-outline ml-1">%</span>
           </span>
           <span className="text-[11px] text-on-surface-variant font-mono mt-0.5">
-            Baseline {metric.toUpperCase()} · default params
+            Baseline {metricLabel(metric).short} · default params
           </span>
           <div className="mt-3 h-1.5 bg-surface-variant rounded-full overflow-hidden">
             <div className="h-full bg-outline/30 rounded-full" style={{ width: `${Math.min(baseline * 100, 100)}%` }} />
@@ -303,7 +312,7 @@ function TuningResultsCard({
             <span className="text-base font-bold text-success-green/70 ml-1">%</span>
           </span>
           <span className="text-[11px] text-on-surface-variant font-mono mt-0.5">
-            Optimized {metric.toUpperCase()} · best params
+            Optimized {metricLabel(metric).short} · best params
           </span>
           <div className="mt-3 h-1.5 bg-surface-variant rounded-full overflow-hidden">
             <motion.div
@@ -330,7 +339,7 @@ function TuningResultsCard({
           <tbody>
             {trials.map((t, idx) => {
               const isBaseline = t.trial === 0;
-              const isBest = !isBaseline && Math.abs(t.score - optimized) < 0.00005 && improved;
+              const isBest = !isBaseline && t.score !== null && Math.abs(t.score - optimized) < 0.00005 && improved;
 
               // Parse the trial parameters into a list of {key, value} chips so
               // the user can see exactly which hyperparameters the optimizer
@@ -401,7 +410,7 @@ function TuningResultsCard({
                       isBest ? "text-success-green" :
                       isBaseline ? "text-primary" : "text-on-surface"
                     )}>
-                      {(t.score * 100).toFixed(2)}%
+                      {t.score === null ? "—" : `${(t.score * 100).toFixed(2)}%`}
                     </span>
                   </td>
                   {/* Outcome — keep the verdict+scores in full, trim the LLM reason
@@ -826,13 +835,12 @@ export default function ResultPage() {
   const extra = result.extra ?? {};
   const features: FeatureImportance[] = extra.top_features ?? [];
   const models: ModelScore[] = extra.all_models ?? [];
-  const trainScore: number | undefined = extra.train_accuracy ?? extra.train_r2;
+  const trainScore: number | undefined = extra.train_score ?? extra.train_accuracy ?? extra.train_r2;
   const overfitGap: number | undefined = extra.overfit_gap;
   const modelName = result.model_name ?? "Best Model";
   const score = result.accuracy_score ?? 0;
   const metric = result.score_metric ?? "score";
   const pct = Math.max(0, Math.min(100, score * 100));
-  const isRegression = metric === "r2";
 
 
 
@@ -950,6 +958,47 @@ export default function ResultPage() {
           </span>
         </motion.button>
 
+        {/* Downloads: the cleaned dataset and the winning model package */}
+        {result.downloads && result.downloads.length > 0 && (
+          <motion.section
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            data-export-ignore
+            className="glass p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 text-left"
+          >
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg sm:rounded-xl bg-surface-purple-tint flex items-center justify-center shrink-0">
+              <Icon name="download" className="text-primary" style={{ fontSize: "22px" }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-base sm:text-headline-md font-bold text-on-background">Downloads</h3>
+              <p className="text-[11px] sm:text-xs font-medium text-on-surface-variant mt-0.5">
+                The cleaned data the models trained on, and the winning model with its weights and a predict script.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 sm:flex gap-2 shrink-0">
+              {result.downloads.includes("cleaned_csv") && (
+                <a
+                  href={downloadUrl(runId, "cleaned_csv")}
+                  className="btn-glass text-xs px-3 sm:px-4 py-2 rounded-lg flex items-center justify-center gap-1.5"
+                >
+                  <Icon name="table_view" style={{ fontSize: "15px" }} />
+                  Cleaned CSV
+                </a>
+              )}
+              {result.downloads.includes("model") && (
+                <a
+                  href={downloadUrl(runId, "model")}
+                  className="btn-primary text-xs px-3 sm:px-4 py-2 rounded-lg flex items-center justify-center gap-1.5"
+                >
+                  <Icon name="deployed_code" style={{ fontSize: "15px" }} />
+                  Model + weights
+                </a>
+              )}
+            </div>
+          </motion.section>
+        )}
+
         {/* Accuracy + Feature Importance (left) and Plot Graphics (right) */}
         <motion.section
           initial={{ opacity: 0, y: 10 }}
@@ -961,7 +1010,7 @@ export default function ResultPage() {
             <AccuracyAndFeaturesCard
               features={features}
               accuracyPct={pct}
-              accuracyLabel={isRegression ? "R² Regression Score" : "Cross-Validation Accuracy"}
+              accuracyLabel={metricLabel(metric).long}
               accuracyUnit="%"
               trendLabel={pct >= 85 ? "Excellent Match" : "Moderate Accuracy"}
               trendKind={pct >= 85 ? "up" : pct >= 65 ? "flat" : "down"}
@@ -987,7 +1036,7 @@ export default function ResultPage() {
           >
             <TuningResultsCard
               trials={extra.tuning_trials}
-              baseline={extra.tuning_trials[0].score}
+              baseline={extra.tuning_trials[0].score ?? score}
               optimized={score}
               metric={metric}
               modelName={modelName}
@@ -1016,13 +1065,13 @@ export default function ResultPage() {
                     <th className="p-2 sm:p-5 text-[10px] sm:text-xs uppercase tracking-wider">Model</th>
                     <th className="p-2 sm:p-5 text-[10px] sm:text-xs uppercase tracking-wider text-center">CV Std</th>
                     <th className="p-2 sm:p-5 text-[10px] sm:text-xs uppercase tracking-wider text-center">CV Mean</th>
-                    <th className="p-2 sm:p-5 text-[10px] sm:text-xs uppercase tracking-wider text-center hidden sm:table-cell">{isRegression ? "Test R²" : "Test Acc"}</th>
+                    <th className="p-2 sm:p-5 text-[10px] sm:text-xs uppercase tracking-wider text-center hidden sm:table-cell">Test {metricLabel(metric).short}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedModels.map((m, i) => {
                     const isWinner = m.name === modelName;
-                    const testScore = isWinner ? score : null;
+                    const testScore = isWinner ? extra.test_score ?? null : null;
                     return (
                       <tr
                         key={m.name}
