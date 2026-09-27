@@ -1,8 +1,14 @@
 -r requirements.txt
 pytest>=8.0
 openpyxl>=3.1  # writes .xlsx fixtures in tests; the app reads Excel with python-calamine
-# The GPU trainer's libraries, at the versions pinned in app/training/gpu_app.py,
-# so tests can exercise app/training/core.py (on CPU, as a test harness only).
+# The GPU trainers' libraries, at the versions pinned in app/training/gpu_app.py,
+# so tests can exercise app/training/ (on CPU, as a test harness only).
 xgboost==3.4.1
 catboost==1.2.10
 optuna==5.0.0
+hdbscan==0.8.44
+torch==2.14.0
+torchvision==0.29.0
+timm==1.0.30
+sentence-transformers==6.1.0
+chronos-forecasting==2.3.2
