@@ -45,7 +45,7 @@ SUBMIT_ANALYSIS = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "problem_type": {"type": "string", "enum": ["classification", "regression"]},
+            "problem_type": {"type": "string", "enum": ["classification", "regression", "clustering"]},
             "problem_type_rationale": {"type": "string"},
             "drop_columns": {
                 "type": "array",
@@ -99,6 +99,8 @@ but don't propose resampling. Only your submitted problem type and drop_columns 
 How to work
 1. Read the dataset profile and the automated audit you are given. They are already computed; don't redo them.
 2. Investigate what they can't settle on their own:
+   - Clustering runs have no target (problem_type "clustering", fixed): look instead for identifiers,
+     duplicated or derived columns, and extreme scales or outliers that would dominate distances.
    - Leakage: features that are a consequence of the target, derived from it, or recorded after the outcome.
      Treat every audit "leakage_suspect" as an open case and show what the data says about it.
    - Identifiers, row numbers, and timestamps that could carry signal they shouldn't.
@@ -136,8 +138,9 @@ def _compact_profile(profile: dict) -> dict:
     return out
 
 
-def _context_message(target: str, detection: dict, profile: dict, audit: dict, ingest: dict | None) -> str:
+def _context_message(target: str | None, detection: dict, profile: dict, audit: dict, ingest: dict | None) -> str:
     payload = {
+        "task": detection["problem_type"] if target is None else "supervised",
         "target": target,
         "detected_problem_type": detection,
         "ingest": {k: (ingest or {}).get(k) for k in ("source_format", "actions", "warnings")},
@@ -150,7 +153,8 @@ def _context_message(target: str, detection: dict, profile: dict, audit: dict, i
     )
 
 
-def validate_analysis(raw: dict, target: str, detection: dict, columns: list[str], target_stats: dict) -> tuple[dict, list[str]]:
+def validate_analysis(raw: dict, target: str | None, detection: dict, columns: list[str],
+                      target_stats: dict | None) -> tuple[dict, list[str]]:
     """Check the agent's submission against the real data. Returns the plan the
     pipeline will follow, plus notes on anything that was rejected."""
     notes: list[str] = []
@@ -165,6 +169,8 @@ def validate_analysis(raw: dict, target: str, detection: dict, columns: list[str
     }
 
     proposed = raw.get("problem_type")
+    if target_stats is None:
+        proposed = None  # clustering: the task is the user's choice, not the agent's
     if proposed and proposed != detection["problem_type"]:
         if proposed == "regression" and not target_stats["numeric"]:
             notes.append("Rejected problem_type=regression: the target is not numeric.")
@@ -196,7 +202,7 @@ def validate_analysis(raw: dict, target: str, detection: dict, columns: list[str
                 "reason": d.get("reason", "other"),
                 "evidence": str(d["evidence"]),
             })
-    if len(plan["drop_columns"]) >= len(columns) - 1:
+    if len(plan["drop_columns"]) >= len(columns) - (1 if target is not None else 0):
         notes.append("Rejected all column drops: they would leave no features.")
         plan["drop_columns"] = []
 
@@ -236,12 +242,14 @@ def run_analyst(
     falls back to the deterministic detector with no extra drops."""
     started = time.monotonic()
     columns = [c["name"] for c in profile.get("columns", [])]
-    df_target = storage.load_dataset(run_id)[target]
-    target_stats = {
-        "numeric": bool(is_numeric_dtype(df_target) and not is_bool_dtype(df_target)),
-        "unique": int(df_target.nunique(dropna=True)),
-        "rows": int(df_target.notna().sum()),
-    }
+    target_stats = None
+    if target is not None:
+        df_target = storage.load_dataset(run_id)[target]
+        target_stats = {
+            "numeric": bool(is_numeric_dtype(df_target) and not is_bool_dtype(df_target)),
+            "unique": int(df_target.nunique(dropna=True)),
+            "rows": int(df_target.notna().sum()),
+        }
     default_plan, _ = validate_analysis({}, target, detection, columns, target_stats)
     result = {"status": "skipped", "plan": default_plan, "notes": [], "cells": [], "llm": None}
 

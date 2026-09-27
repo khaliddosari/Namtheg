@@ -22,15 +22,19 @@ _NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?%?")
 JUSTIFICATION_SYSTEM_PROMPT = """You write the result summary for نَمذِج, an AutoML platform, read by
 data analysts and business leads.
 
-Write 2-3 sentences covering: which model won and how its cross-validated score compares with
-the naive baseline; what that score means in plain terms; and the single most important caveat
+Write 2-3 sentences covering: which model won and how its score compares with the naive baseline
+(when FACTS has one); what that score means in plain terms; and the single most important caveat
 from the facts (a critical audit or analysis finding if there is one, otherwise the most relevant
 limitation).
 
 Rules:
 - Use only numbers that appear in the FACTS JSON. Round them if you like, but never compute,
   estimate, or introduce new ones.
+- Respect the metric's direction: model.higher_is_better is false for errors like MASE, where
+  lower is better.
 - If the model does not clearly beat the baseline, say so plainly.
+- Clustering has no ground truth: describe the strength of the structure using silhouette_guide,
+  never claim the clusters are correct or meaningful segments.
 - Never call the model production-ready.
 - Plain text only: no markdown, no lists. Never use an em dash or en dash; use commas or semicolons.
 - Refer to the platform as نَمذِج, not as an agent or AI."""
@@ -100,19 +104,36 @@ def _clean(text: str) -> str:
     return text.strip().replace("—", ", ").replace("–", "-")
 
 
+EVALUATION = {
+    "classification": "a cross-validated", "regression": "a cross-validated", "clustering": "a",
+    "forecasting": "a rolling-backtest", "image_classification": "a validation",
+}
+# Kaufman & Rousseeuw's reading of the average silhouette width.
+SILHOUETTE_LEVELS = ((0.7, "strong"), (0.5, "reasonable"), (0.25, "weak"))
+
+
+def silhouette_guide(value: float) -> dict:
+    level = next((name for cut, name in SILHOUETTE_LEVELS if value >= cut), "no substantial")
+    return {"value": value, "structure": level, "thresholds": {"strong": 0.7, "reasonable": 0.5, "weak": 0.25}}
+
+
 def template_justification(facts: dict) -> str:
     """Deterministic fallback: built only from facts, so it is always grounded."""
     m = facts["model"]
-    metric = m["metric"]
-    parts = [f"{m['name']} achieved a cross-validated {metric} of {m['cv_score']:.4f}"]
-    if m.get("test_score") is not None:
-        parts.append(f" and {m['test_score']:.4f} on the held-out test set")
+    task = facts.get("task", "classification")
+    text = f"{m['name']} achieved {EVALUATION.get(task, 'a')} {m['metric']} of {m['score']:.4f}"
+    if m.get("test_score") is not None and task != "clustering":
+        text += f" and {m['test_score']:.4f} on the held-out test set"
     base = facts.get("baseline")
-    if base:
-        parts.append(f", against {base['cv_mean']:.4f} for a naive baseline ({base['name'].lower()})")
-    text = "".join(parts) + "."
-    if base and not facts.get("beats_baseline", True):
+    if base and base.get("cv_mean") is not None:
+        direction = " (lower is better)" if m.get("higher_is_better") is False else ""
+        text += f", against {base['cv_mean']:.4f} for a naive baseline ({base['name'].lower()}){direction}"
+    text += "."
+    if base and facts.get("beats_baseline") is False:
         text += " The model does not meaningfully beat that baseline, so its predictions should not be relied on."
+    if task == "clustering" and facts.get("silhouette_guide"):
+        text += (f" That silhouette indicates {facts['silhouette_guide']['structure']} cluster structure; "
+                 "there is no ground truth, so the clusters are a description of the data, not verified segments.")
     caveat = next((f["detail"] for f in facts.get("critical_findings", [])), None)
     if caveat:
         text += f" Caveat: {caveat}"
