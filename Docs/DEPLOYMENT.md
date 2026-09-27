@@ -31,16 +31,41 @@ Deploying the backend to Modal solves all Render free-tier constraints:
    ```
 2. Make sure `Backend/.env` contains your configuration:
    ```ini
-   OPENROUTER_API_KEY=your_key_here
-   OPENROUTER_MODEL=deepseek/deepseek-v4-flash
+   OPENAI_API_KEY=your_openai_key          # primary: gpt-6-sol
+   OPENROUTER_API_KEY=your_openrouter_key  # fallback: deepseek/deepseek-v4-flash
+   SANDBOX_BACKEND=modal
    MODAL_WORKSPACE=your-modal-username
    ```
+   Verify both keys before deploying: `python -m scripts.check_llm`.
 
 ### Deploy
-Deploy the FastAPI backend:
+All model training runs on an NVIDIA **H200** (`app/training/gpu_app.py`); there is no CPU
+or local training path, so runs fail until this service is deployed. Modal only allows GPU
+functions on accounts with a **payment method** on file (Settings → Billing), even when
+paid from free credits. H200 is billed per second at about $4.54/hr.
+
 ```bash
 modal deploy app/deploy/backend_app.py
+modal deploy app/training/gpu_app.py       # whenever app/training/ changes
+modal deploy app/deploy/inference_app.py   # whenever its pins or app/training/core.py change
+modal app stop modelforge-train            # the old 8-CPU trainer, no longer used
 ```
+The GPU and inference images pin identical library versions (`tests/test_training.py`
+enforces it); change them together and redeploy both.
+
+The analyst agent's sandbox needs no deploy step: the backend creates a short-lived
+Modal Sandbox per run under the `namtheg-sandbox` app. The first run builds its image
+(~30 s); later runs reuse it.
+
+### R2 storage (optional)
+1. Cloudflare dashboard → R2 → create a bucket (e.g. `namtheg-runs`). Keep it private.
+2. R2 → Manage API tokens → create a token with **Object Read & Write** on that bucket only.
+3. Add `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` to `Backend/.env`
+   and redeploy the backend. `/health` reports `"r2_enabled": true` when it's on.
+
+Every run artifact is then mirrored to the bucket, runs missing from the Modal Volume are
+restored from it, and the result page's downloads redirect to presigned URLs that expire
+after 15 minutes. No bucket CORS setup is needed: downloads are plain browser navigations.
 
 Modal will output your permanent public URL, for example:
 ```

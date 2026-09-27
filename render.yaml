@@ -31,6 +31,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
+      # Primary LLM (GPT-6 Sol on OpenAI). DeepSeek via OpenRouter is the fallback.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LLM_PRIMARY_MODEL
+        value: gpt-6-sol
+      - key: SANDBOX_BACKEND
+        value: modal
       - key: OPENROUTER_API_KEY
         sync: false # Securely prompted during Render setup
       - key: OPENROUTER_BASE_URL

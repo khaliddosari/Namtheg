@@ -1,8 +1,8 @@
-# Namtheg: LangChain-Orchestrated AutoML 🛠️
+# Namtheg: Agentic AutoML 🛠️
 
-Namtheg is a premium, end-to-end agentic AutoML platform. It automates the entire machine learning pipeline—from raw CSV upload, profiling, target selection, and feature engineering to model training, evaluation plotting, and instant serverless API deployment.
+Namtheg is a premium, end-to-end agentic AutoML platform. It automates the entire machine learning pipeline—from raw data upload (CSV, Excel, Parquet, JSON), profiling, target selection, and feature engineering to model training, evaluation plotting, and instant serverless API deployment.
 
-Driven by a **LangChain agentic brain (DeepSeek via OpenRouter)** and equipped with tailored Python execution tools, Namtheg makes training and deploying custom ML models a seamless, single-click experience.
+An **analyst agent (GPT-6 Sol, with DeepSeek V4 Flash as fallback)** investigates each dataset the way a data scientist would, running its own pandas code in an isolated, network-blocked sandbox. Every number it reports is checked against what the pipeline actually computed.
 
 ---
 
@@ -13,10 +13,14 @@ This repository is structured as a modern monorepo separating frontend UI from b
 ```
 ├── Backend/                 # Python FastAPI Backend
 │   ├── app/
-│   │   ├── agent/           # LangChain Tool-calling Orchestrator & System Prompts
-│   │   ├── pipeline/        # Core pipeline steps (Profiling, Feature Engineering, Training, Visualization)
+│   │   ├── agent/           # Orchestrator, analyst agent, tuning, grounded report
+│   │   ├── data/            # Any upload → typed Parquet DataFrame
+│   │   ├── sandbox/         # Isolated code execution for the agent (Modal Sandbox)
+│   │   ├── training/        # H200 GPU training service and engine
+│   │   ├── pipeline/        # Profiling, audit, feature engineering, training, visualization
 │   │   ├── deploy/          # Modal serverless deployment logic
-│   │   ├── storage.py       # Local file-based run manager
+│   │   ├── llm.py           # Primary/fallback LLM client
+│   │   ├── storage.py       # Run storage (Modal Volume in production)
 │   │   └── main.py          # FastAPI application routes
 │   ├── requirements.txt     # Backend Python dependencies
 │   └── .env.example         # Example local backend environment variables
@@ -40,17 +44,18 @@ This repository is structured as a modern monorepo separating frontend UI from b
 
 ---
 
-## 🧠 LangChain AutoML Pipeline Flow
+## 🧠 AutoML Pipeline Flow
 
-When you select a target column and click **Start AutoML**, Namtheg kicks off a stateful LangChain agent that executes the following specialized tools sequentially:
+When you select a target column and click **Start AutoML**:
 
-1. **`profile_dataset`**: Inspects schemas, missing values, distinct values, and data types.
-2. **`detect_problem_type`**: Auto-detects whether the task is `regression` or `classification` based on the target column cardinality and datatype.
-3. **`run_eda`**: Computes descriptive statistics, target distribution characteristics, and feature-target correlations.
-4. **`feature_engineer`**: Dynamically drops high-missing or high-cardinality ID columns, imputes missing values (median/mode), and encodes categorical columns.
-5. **`train_model`**: Trains a Random Forest (Regressor or Classifier) with a 5-fold Cross-Validation + 80/20 holdout split.
-6. **`generate_visualization`**: Generates a Predicted-vs-Actual scatter plot (regression) or Confusion Matrix heatmap (classification).
-7. **Justification**: DeepSeek reviews all metrics and writes a highly structured 3-5 sentence analysis explaining model performance.
+1. **Ingest (at upload)**: the file is converted once into a typed Parquet DataFrame; every later step reads that, never the raw file.
+2. **Profile, detect, audit**: schema and missing values, regression vs classification, and deterministic checks for leakage suspects, duplicates, class imbalance, identifiers and temporal columns.
+3. **Analyst agent**: GPT-6 Sol writes and runs pandas code in a Modal Sandbox (gVisor, no network, no secrets) to investigate what the audit can't settle, then submits validated decisions: columns to drop with evidence, findings, and open questions it won't guess at.
+4. **Imbalance plan**: decided before any model is fit. Imbalanced targets train with balanced class weights (computed inside each fold) and are judged by macro F1, not accuracy.
+5. **Train & tune on an H200 GPU**: XGBoost (depth-wise and leaf-wise) and CatBoost, cross-validated with preprocessing fitted inside each fold, next to a feature-blind baseline; the best is tuned with Optuna by CV mean, never the test set. No CPU or local training path exists.
+6. **Visualize**: Predicted-vs-Actual (regression) or a confusion matrix (classification).
+7. **Grounded justification**: a short write-up whose every number is verified against computed results, with a deterministic fallback.
+8. **Downloads**: the cleaned dataset as CSV, and the winning model package (weights in native XGBoost/CatBoost format, metadata, and a working `predict.py`). Optionally stored in Cloudflare R2 and served through expiring links.
 
 ---
 
@@ -77,14 +82,16 @@ When you select a target column and click **Start AutoML**, Namtheg kicks off a 
    ```
 3. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
    ```
 4. Configure your environment variables:
    ```bash
    copy .env.example .env
    ```
    Open `.env` and fill in:
-   - `OPENROUTER_API_KEY`: Get one from [OpenRouter](https://openrouter.ai/).
+   - `OPENAI_API_KEY`: primary model (GPT-6 Sol).
+   - `OPENROUTER_API_KEY`: fallback model (DeepSeek V4 Flash), from [OpenRouter](https://openrouter.ai/).
+   - `SANDBOX_BACKEND`: `modal` (default; needs `modal token new`) or `local` for unisolated development.
    - `MODAL_WORKSPACE`: Your Modal username.
 
 5. Start the backend:
