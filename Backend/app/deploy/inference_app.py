@@ -22,26 +22,28 @@ training environment changes, then `modal deploy` again to refresh the image.
 import modal
 
 
-# Pinned to match the backend's training environment so unpickled models load
-# cleanly. Update + redeploy together when the training requirements change.
+# Must equal the GPU training image (app/training/gpu_app.py) for every
+# package they share, so the pipelines pickled there unpickle here; the Python
+# version must match too. tests/test_training.py enforces this. Update both and
+# redeploy both together. xgboost-cpu is the same `xgboost` module without CUDA:
+# serving runs on CPU, and trained models are switched to device="cpu".
+PYTHON_VERSION = "3.12"
 IMAGE_PIN = {
     "scikit-learn": "1.8.0",
     "pandas": "2.3.3",
     "numpy": "2.4.6",
     "scipy": "1.17.1",
     "joblib": "1.5.3",
+    "xgboost-cpu": "3.4.1",
+    "catboost": "1.2.10",
 }
 
 image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        f"scikit-learn=={IMAGE_PIN['scikit-learn']}",
-        f"pandas=={IMAGE_PIN['pandas']}",
-        f"numpy=={IMAGE_PIN['numpy']}",
-        f"scipy=={IMAGE_PIN['scipy']}",
-        f"joblib=={IMAGE_PIN['joblib']}",
-        "fastapi[standard]",
-    )
+    modal.Image.debian_slim(python_version=PYTHON_VERSION)
+    .pip_install(*(f"{name}=={version}" for name, version in IMAGE_PIN.items()), "fastapi[standard]")
+    # For app.training.core.load_bundle, which rebuilds pipelines from the
+    # portable model format. Deploy from Backend/ so `app` is importable.
+    .add_local_python_source("app")
 )
 
 # All run models live here; the backend writes /{run_id}/model.joblib into it
@@ -82,12 +84,15 @@ class Predictor:
             return bundle
 
         import joblib
+
+        from app.training.core import load_bundle
+
         # The backend writes models as /models/<run_id>/model.joblib, and calls
         # vol.commit() so the file is visible here. We also call reload() to be
         # sure our container's view is fresh — cheap on a hot path.
         models_volume.reload()
         path = f"/models/{run_id}/model.joblib"
-        bundle = joblib.load(path)
+        bundle = load_bundle(joblib.load(path))
 
         # Evict oldest if at capacity.
         if len(self._cache) >= self._CACHE_LIMIT:
@@ -139,8 +144,10 @@ class Predictor:
             }
 
         try:
-            preds = model.predict(df)
-            preds_list = preds.tolist() if hasattr(preds, "tolist") else list(preds)
+            import numpy as np
+
+            # ravel: CatBoost multiclass predict returns shape (n, 1).
+            preds_list = np.asarray(model.predict(df)).ravel().tolist()
             result = {"predictions": preds_list, "model": model_name}
 
             if problem_type == "classification":

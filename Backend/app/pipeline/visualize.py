@@ -79,6 +79,7 @@ def generate_visualization(run_id: str, target: str, problem_type: str) -> dict:
     out = storage.artifact_path(run_id, "plot.png")
     fig.savefig(out, dpi=100, transparent=True)
     plt.close(fig)
+    storage.persist(run_id, "plot.png")
 
     info = {"plot_kind": plot_kind, "plot_path": str(out)}
     storage.write_json(run_id, "visualization.json", info)

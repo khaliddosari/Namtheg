@@ -47,8 +47,7 @@ def deploy_run(run_id: str) -> dict:
     Returns the resulting deployment dict (also persisted to deployment.json).
     """
     started = time.time()
-    run_dir = storage.run_dir(run_id)
-    model_path = run_dir / "model.joblib"
+    model_path = storage.artifact_path(run_id, "model.joblib")  # restores from R2 if needed
 
     if not model_path.exists():
         err = "model.joblib missing — has the training run succeeded?"

@@ -1,515 +1,122 @@
-import io
+"""Backend side of training.
+
+Every model is fit on the GPU service (app/training/gpu_app.py). This module
+ships the engineered dataset there and stores what comes back. There is
+deliberately no local or CPU fallback: if the GPU service is unavailable, the
+run fails with that error rather than quietly training somewhere else.
+"""
 import logging
 
-import joblib
 import numpy as np
-import pandas as pd
-from pandas.api.types import is_numeric_dtype
-from sklearn.base import clone
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    mean_absolute_error,
-    r2_score,
-    root_mean_squared_error,
-)
-from sklearn.model_selection import cross_val_score, train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
-from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import Ridge
-from sklearn.neighbors import KNeighborsRegressor
 
 from app import storage
-from app.pipeline.models.classifiers import CLASSIFIERS
-from app.pipeline.models.regressors import REGRESSORS
+from app.config import settings
 
 log = logging.getLogger(__name__)
 
-ONE_HOT_MAX_CARDINALITY = 10
-
-RANDOM_STATE = 42
-
-
-def _inner_estimator(model):
-    """Walk past any Pipeline wrapping and return the underlying estimator."""
-    while isinstance(model, Pipeline):
-        model = model.steps[-1][1]
-    return model
+GPU_APP_NAME = "namtheg-train-gpu"
+WEIGHTS_FILES = {"xgboost-json": "model_weights.json", "catboost-cbm": "model_weights.cbm"}
 
 
-def _build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
-    """Build a ColumnTransformer that imputes and encodes per column type.
+def _remote_train(data: bytes, target: str, problem_type: str, plan: dict) -> dict:
+    import modal
 
-    Numeric → median imputation. Low-cardinality categoricals → most-frequent
-    imputation + one-hot. High-cardinality categoricals → most-frequent
-    imputation + ordinal encoding. Unknown categories at inference time map
-    to -1 (ordinal) or all-zero (one-hot), so the deployed endpoint won't
-    crash on previously-unseen values.
-    """
-    numeric_cols: list[str] = []
-    one_hot_cols: list[str] = []
-    ordinal_cols: list[str] = []
-
-    for c in X.columns:
-        if is_numeric_dtype(X[c]):
-            numeric_cols.append(c)
-        elif X[c].nunique(dropna=True) <= ONE_HOT_MAX_CARDINALITY:
-            one_hot_cols.append(c)
-        else:
-            ordinal_cols.append(c)
-
-    transformers: list = []
-    if numeric_cols:
-        transformers.append(("num", SimpleImputer(strategy="median"), numeric_cols))
-    if one_hot_cols:
-        transformers.append((
-            "cat_low",
-            Pipeline([
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False, drop="if_binary")),
-            ]),
-            one_hot_cols,
-        ))
-    if ordinal_cols:
-        transformers.append((
-            "cat_high",
-            Pipeline([
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
-            ]),
-            ordinal_cols,
-        ))
-
-    return ColumnTransformer(transformers, remainder="drop")
-
-
-def _wrap_with_preprocessor(X: pd.DataFrame, template):
-    """Prepend a ColumnTransformer so imputation+encoding re-fit per CV fold."""
-    preprocessor = _build_preprocessor(X)
-    if isinstance(template, Pipeline):
-        # Existing pipelines (LogReg/KNN) include an inner scaler+model; insert
-        # the preprocessor first and keep the rest as a flat pipeline.
-        return Pipeline([("preprocessor", preprocessor)] + list(template.steps))
-    return Pipeline([("preprocessor", preprocessor), ("model", template)])
-
-
-def save_model_bundle(
-    run_id: str,
-    model,
-    feature_cols: list[str],
-    problem_type: str,
-    model_name: str,
-    class_labels: list | None,
-) -> None:
-    """Pickle the fitted Pipeline (imputer + model) so Modal can serve it.
-
-    The bundle stores a single sklearn Pipeline that handles imputation and
-    prediction in one step — Modal's serve.py just calls `model.predict(df)`
-    on raw input.
-    """
-    bundle = {
-        "model": model,
-        "feature_cols": feature_cols,
-        "problem_type": problem_type,
-        "model_name": model_name,
-        "class_labels": class_labels,
-    }
-    joblib.dump(bundle, storage.run_dir(run_id) / "model.joblib")
-
-
-def _feature_importances(model, columns: list[str]) -> list[dict]:
-    """Extract top-10 feature importances from tree or linear models.
-
-    Maps onto the *post-encoding* column names (one-hot expansion), pulled
-    from the fitted preprocessor when available — so each dummy column shows
-    up with its own importance instead of being silently aliased to the raw
-    column name.
-    """
-    est = _inner_estimator(model)
-    if hasattr(est, "feature_importances_"):
-        imps = np.array(est.feature_importances_)
-    elif hasattr(est, "coef_"):
-        coef = np.array(est.coef_)
-        imps = np.abs(coef[0] if coef.ndim > 1 else coef)
-    else:
-        return []
-
-    expanded_cols: list[str] = list(columns)
-    if isinstance(model, Pipeline):
-        try:
-            expanded_cols = list(model[:-1].get_feature_names_out())
-        except Exception:
-            pass
-    if len(expanded_cols) != len(imps):
-        expanded_cols = [f"feature_{i}" for i in range(len(imps))]
-
-    pairs = sorted(zip(expanded_cols, imps.tolist()), key=lambda kv: kv[1], reverse=True)[:10]
-    return [{"feature": f, "importance": round(float(i), 4)} for f, i in pairs]
-
-
-def train_model(run_id: str, target: str, problem_type: str) -> dict:
-    """Train all candidate models and save artifacts.
-
-    Tries to run on Modal (8 CPUs) first for speed. Falls back to local
-    execution automatically if Modal is unavailable or not configured.
-    """
-    # ── try Modal ─────────────────────────────────────────────────────────────
-    use_modal = False
     try:
-        csv_path = storage.engineered_path(run_id)
-        if csv_path.exists():
-            file_size_bytes = csv_path.stat().st_size
-            if file_size_bytes >= 1 * 1024 * 1024:
-                use_modal = True
-            else:
-                log.info(
-                    "Dataset is small (%.2f KB < 1 MB). Training locally for optimal performance.",
-                    file_size_bytes / 1024
-                )
-    except Exception as e:
-        log.warning("Error checking dataset size: %s. Defaulting to local training.", e)
+        return modal.Function.from_name(GPU_APP_NAME, "train").remote(data, target, problem_type, plan)
+    except modal.exception.NotFoundError as e:
+        raise RuntimeError(
+            f"The GPU training service '{GPU_APP_NAME}' is not deployed. Run: modal deploy app/training/gpu_app.py"
+        ) from e
 
-    if use_modal:
-        try:
-            import modal
-            run_training = modal.Function.from_name("modelforge-train", "run_training")
-            csv_bytes = storage.engineered_path(run_id).read_bytes()
-            log.info("Sending training job to Modal for run %s", run_id)
-            result = run_training.remote(csv_bytes, target, problem_type)
 
-            # Save all artifacts returned by Modal
-            metrics = result["metrics"]
-            y_test = np.array(result["y_test"])
-            y_pred = np.array(result["y_pred"])
-            np.save(storage.run_dir(run_id) / "y_test.npy", y_test)
-            np.save(storage.run_dir(run_id) / "y_pred.npy", y_pred)
+def train_model(run_id: str, target: str, problem_type: str, imbalance_plan: dict) -> dict:
+    """Train on the GPU and persist every artifact. Returns metrics in the
+    shape result.json has always used ({"model_name", "score", "score_metric",
+    "extra"})."""
+    plan = {
+        "imbalance": imbalance_plan,
+        "tuning_trials": settings.tuning_trials,
+        "tuning_timeout_seconds": settings.tuning_timeout_seconds,
+    }
+    log.info("Sending run %s to the GPU training service.", run_id)
+    out = _remote_train(storage.engineered_path(run_id).read_bytes(), target, problem_type, plan)
+    log.info("Run %s trained on %s in %ss.", run_id, out.get("hardware", {}).get("gpu"), out.get("seconds"))
+    return _store(run_id, target, out)
 
-            bundle_buf = io.BytesIO(result["model_bytes"])
-            bundle = joblib.load(bundle_buf)
-            joblib.dump(bundle, storage.run_dir(run_id) / "model.joblib")
 
-            storage.write_json(run_id, "metrics.json", metrics)
-            log.info("Modal training succeeded for run %s — model: %s", run_id, metrics.get("model_name"))
-            return metrics
+def _save_bytes(run_id: str, name: str, data: bytes) -> None:
+    (storage.run_dir(run_id) / name).write_bytes(data)
+    storage.persist(run_id, name)
 
-        except Exception as exc:
-            log.warning("Modal training failed for run %s (%s) — falling back to local", run_id, exc)
 
-    # ── local fallback ────────────────────────────────────────────────────────
-    df = pd.read_csv(storage.engineered_path(run_id))
-    if target not in df.columns:
-        raise ValueError(f"Target '{target}' missing from engineered dataset.")
+def _save_array(run_id: str, name: str, values) -> None:
+    np.save(storage.run_dir(run_id) / name, values, allow_pickle=True)
+    storage.persist(run_id, name)
 
-    X = df.drop(columns=[target])
-    y = df[target]
-    feature_cols = X.columns.tolist()
 
-    class_labels: list | None = None
-    if problem_type == "classification":
-        if not np.issubdtype(y.dtype, np.number):
-            y, labels = pd.factorize(y)
-            class_labels = labels.tolist()
+def _store(run_id: str, target: str, out: dict) -> dict:
+    labels = out["class_labels"]
+    y_test, y_pred = np.asarray(out["y_test"]), np.asarray(out["y_pred"])
+    if labels:
+        # Plot real class names, not the integer codes the models trained on.
+        names = np.asarray([str(label) for label in labels], dtype=object)
+        y_test, y_pred = names[y_test.astype(int)], names[y_pred.astype(int)]
+    _save_array(run_id, "y_test.npy", y_test)
+    _save_array(run_id, "y_pred.npy", y_pred)
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=RANDOM_STATE,
-            stratify=y if len(np.unique(y)) > 1 else None,
-        )
-        # NOTE: no upfront imputation — each candidate is a Pipeline that imputes
-        # internally, so CV folds and final fit/predict all impute on train rows only.
+    _save_bytes(run_id, "model.joblib", out["bundle_bytes"])
+    weights_file = WEIGHTS_FILES[out["weights_format"]]
+    _save_bytes(run_id, weights_file, out["weights_bytes"])
 
-        # CV fold count bounded by smallest class size to avoid stratification errors.
-        min_class_count = int(np.bincount(y_train.astype(int)).min())
-        n_splits = max(2, min(5, min_class_count))
+    head = storage.engineered_head(run_id, 1)
+    storage.write_json(run_id, "model_meta.json", {
+        "model_name": out["model_name"],
+        "problem_type": out["problem_type"],
+        "target": target,
+        "feature_cols": out["feature_cols"],
+        "feature_dtypes": {c: str(head[c].dtype) for c in out["feature_cols"] if c in head.columns},
+        "class_labels": labels,
+        "params": out["params"],
+        "preprocessing": out["preprocessing"],
+        "weights_file": weights_file,
+        "weights_format": out["weights_format"],
+        "library_versions": out["library_versions"],
+        "hardware": out.get("hardware"),
+    })
 
-        # Sweep: rank all candidates by 5-fold CV only.
-        # Each template is cloned so module-level definitions are never mutated
-        # and concurrent runs don't corrupt each other.
-        # PERF: previously each iteration also did a full fitted.fit + predict to
-        # compute a per-candidate test_acc that was then thrown away (never
-        # appended to all_scores). Dropping that wasted training pass roughly
-        # halves the per-candidate cost.
-        all_scores: list[dict] = []
-        best_name, best_template, best_cv_mean = None, None, -1.0
-
-        for name, template in CLASSIFIERS:
-            pipe = _wrap_with_preprocessor(X_train, clone(template))
-            cv = cross_val_score(pipe, X_train, y_train, cv=n_splits, scoring="accuracy", n_jobs=-1)
-            all_scores.append({
-                "name": name,
-                "cv_mean": round(float(cv.mean()), 4),
-                "cv_std": round(float(cv.std()), 4),
-            })
-            if cv.mean() > best_cv_mean:
-                best_cv_mean = float(cv.mean())
-                best_name = name
-                best_template = template
-
-        # Single final fit of the winner on the full training set.
-        # Must wrap with preprocessor again — best_template is the raw estimator.
-        best_model = _wrap_with_preprocessor(X_train, clone(best_template))
-        best_model.fit(X_train, y_train)
-
-        preds = best_model.predict(X_test)
-        best_test_acc = float(accuracy_score(y_test, preds))
-        train_acc = float(accuracy_score(y_train, best_model.predict(X_train)))
-        f1m = float(f1_score(y_test, preds, average="macro", zero_division=0))
-
-        metrics = {
-            "model_name": best_name,
-            "score": best_test_acc,
-            "score_metric": "accuracy",
-            "extra": {
-                "train_accuracy": train_acc,
-                "overfit_gap": round(train_acc - best_test_acc, 4),
-                "f1_macro": f1m,
-                "cv_accuracy_mean": round(best_cv_mean, 4),
-                "n_classes": int(len(np.unique(y))),
-                "test_size": int(len(y_test)),
-                "all_models": sorted(all_scores, key=lambda x: x["cv_mean"], reverse=True),
-            },
-        }
-        np.save(storage.run_dir(run_id) / "y_test.npy", y_test)
-        np.save(storage.run_dir(run_id) / "y_pred.npy", preds)
-
+    metric = out["selection_metric"]
+    test, train = out["test_metrics"], out["train_metrics"]
+    extra = {
+        "cv_mean": out["cv_mean"],
+        "train_score": out["train_score"],
+        "test_score": out["test_score"],
+        "overfit_gap": round(out["train_score"] - out["cv_mean"], 4),
+        "test_metrics": test,
+        "train_metrics": train,
+        "n_folds": out["n_folds"],
+        "test_size": out["test_size"],
+        "params": out["params"],
+        "all_models": out["all_models"],
+        "top_features": out["top_features"],
+        "tuning_trials": out["tuning_trials"],
+        "baseline": out["baseline"],
+        "imbalance_applied": out["imbalance_applied"],
+        "hardware": out.get("hardware"),
+        "training_seconds": out.get("seconds"),
+    }
+    # Keys the current frontend reads.
+    if out["problem_type"] == "classification":
+        extra.update({
+            "train_accuracy": train["accuracy"],
+            "f1_macro": test["f1_macro"],
+            "balanced_accuracy": test["balanced_accuracy"],
+            "n_classes": out["n_classes"],
+        })
+        if metric == "accuracy":
+            extra["cv_accuracy_mean"] = out["cv_mean"]
     else:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=RANDOM_STATE,
-        )
-        # NOTE: no upfront imputation — see classification branch above.
+        extra.update({"train_r2": train["r2"], "cv_r2_mean": out["cv_mean"], "rmse": test["rmse"], "mae": test["mae"]})
 
-        # Cap CV folds by training set size to avoid degenerate folds on tiny datasets.
-        n_splits = max(2, min(5, len(X_train) // 10))
-
-        # Sweep: rank all candidates by 5-fold CV only.
-        # PERF: dropped a wasted per-candidate fitted.fit + test_r2 that was
-        # never used downstream (same fix as the classification branch above).
-        all_scores: list[dict] = []
-        best_name, best_template, best_cv_mean = None, None, float("-inf")
-
-        for name, template in REGRESSORS:
-            pipe = _wrap_with_preprocessor(X_train, clone(template))
-            cv = cross_val_score(pipe, X_train, y_train, cv=n_splits, scoring="r2", n_jobs=-1)
-            all_scores.append({
-                "name": name,
-                "cv_mean": round(float(cv.mean()), 4),
-                "cv_std": round(float(cv.std()), 4),
-            })
-            if cv.mean() > best_cv_mean:
-                best_cv_mean = float(cv.mean())
-                best_name = name
-                best_template = template
-
-        # Single final fit of the winner on the full training set.
-        # Must wrap with preprocessor again — best_template is the raw estimator.
-        best_model = _wrap_with_preprocessor(X_train, clone(best_template))
-        best_model.fit(X_train, y_train)
-
-        preds = best_model.predict(X_test)
-        best_test_r2 = float(r2_score(y_test, preds))
-        train_r2 = float(r2_score(y_train, best_model.predict(X_train)))
-        rmse = float(root_mean_squared_error(y_test, preds))
-        mae = float(mean_absolute_error(y_test, preds))
-
-        metrics = {
-            "model_name": best_name,
-            "score": best_test_r2,
-            "score_metric": "r2",
-            "extra": {
-                "train_r2": train_r2,
-                "overfit_gap": round(train_r2 - best_test_r2, 4),
-                "rmse": rmse,
-                "mae": mae,
-                "cv_r2_mean": round(best_cv_mean, 4),
-                "test_size": int(len(y_test)),
-                "all_models": sorted(all_scores, key=lambda x: x["cv_mean"], reverse=True),
-            },
-        }
-        np.save(storage.run_dir(run_id) / "y_test.npy", np.asarray(y_test))
-        np.save(storage.run_dir(run_id) / "y_pred.npy", preds)
-
-    metrics["extra"]["top_features"] = _feature_importances(best_model, feature_cols)
+    metrics = {"model_name": out["model_name"], "score": out["cv_mean"], "score_metric": metric, "extra": extra}
     storage.write_json(run_id, "metrics.json", metrics)
-    save_model_bundle(
-        run_id,
-        model=best_model,
-        feature_cols=feature_cols,
-        problem_type=problem_type,
-        model_name=best_name,
-        class_labels=class_labels,
-    )
     return metrics
-
-
-def get_classifier(model_name: str, params: dict):
-    rs = 42
-    if model_name == "RandomForest":
-        return RandomForestClassifier(
-            n_estimators=int(params.get("n_estimators", 200)),
-            max_depth=params.get("max_depth", None),
-            min_samples_split=int(params.get("min_samples_split", 2)),
-            random_state=rs,
-            n_jobs=-1
-        )
-    elif model_name == "ExtraTrees":
-        return ExtraTreesClassifier(
-            n_estimators=int(params.get("n_estimators", 200)),
-            max_depth=params.get("max_depth", None),
-            random_state=rs,
-            n_jobs=-1
-        )
-    elif model_name == "GradientBoosting":
-        return GradientBoostingClassifier(
-            n_estimators=int(params.get("n_estimators", 200)),
-            learning_rate=float(params.get("learning_rate", 0.1)),
-            max_depth=int(params.get("max_depth", 3)),
-            n_iter_no_change=10,
-            validation_fraction=0.1,
-            tol=1e-4,
-            random_state=rs
-        )
-    elif model_name == "LogisticRegression":
-        return Pipeline([
-            ("scaler", StandardScaler()),
-            ("model", LogisticRegression(
-                C=float(params.get("C", 1.0)),
-                max_iter=1000,
-                random_state=rs,
-                n_jobs=-1
-            ))
-        ])
-    elif model_name == "KNN":
-        return Pipeline([
-            ("scaler", StandardScaler()),
-            ("model", KNeighborsClassifier(
-                n_neighbors=int(params.get("n_neighbors", 5)),
-                weights=params.get("weights", "uniform"),
-                n_jobs=-1
-            ))
-        ])
-    else:
-        raise ValueError(f"Unknown classifier model_name: {model_name}")
-
-
-def get_regressor(model_name: str, params: dict):
-    rs = 42
-    if model_name == "RandomForest":
-        return RandomForestRegressor(
-            n_estimators=int(params.get("n_estimators", 200)),
-            max_depth=params.get("max_depth", None),
-            min_samples_split=int(params.get("min_samples_split", 2)),
-            random_state=rs,
-            n_jobs=-1
-        )
-    elif model_name == "ExtraTrees":
-        return ExtraTreesRegressor(
-            n_estimators=int(params.get("n_estimators", 200)),
-            max_depth=params.get("max_depth", None),
-            random_state=rs,
-            n_jobs=-1
-        )
-    elif model_name == "GradientBoosting":
-        return GradientBoostingRegressor(
-            n_estimators=int(params.get("n_estimators", 200)),
-            learning_rate=float(params.get("learning_rate", 0.1)),
-            max_depth=int(params.get("max_depth", 3)),
-            n_iter_no_change=10,
-            validation_fraction=0.1,
-            tol=1e-4,
-            random_state=rs
-        )
-    elif model_name == "Ridge":
-        return Pipeline([
-            ("scaler", StandardScaler()),
-            ("model", Ridge(alpha=float(params.get("alpha", 1.0))))
-        ])
-    elif model_name == "KNN":
-        return Pipeline([
-            ("scaler", StandardScaler()),
-            ("model", KNeighborsRegressor(
-                n_neighbors=int(params.get("n_neighbors", 5)),
-                weights=params.get("weights", "uniform"),
-                n_jobs=-1
-            ))
-        ])
-    else:
-        raise ValueError(f"Unknown regressor model_name: {model_name}")
-
-
-def train_champion_with_params(run_id: str, target: str, problem_type: str, model_name: str, params: dict) -> dict:
-    df = pd.read_csv(storage.engineered_path(run_id))
-    if target not in df.columns:
-        raise ValueError(f"Target '{target}' missing from engineered dataset.")
-
-    X = df.drop(columns=[target])
-    y = df[target]
-    feature_cols = X.columns.tolist()
-
-    class_labels: list | None = None
-    if problem_type == "classification":
-        if not np.issubdtype(y.dtype, np.number):
-            y, labels = pd.factorize(y)
-            class_labels = labels.tolist()
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=RANDOM_STATE,
-            stratify=y if len(np.unique(y)) > 1 else None,
-        )
-
-        min_class_count = int(np.bincount(y_train.astype(int)).min())
-        n_splits = max(2, min(5, min_class_count))
-
-        model = _wrap_with_preprocessor(X_train, get_classifier(model_name, params))
-        cv = cross_val_score(clone(model), X_train, y_train, cv=n_splits, scoring="accuracy", n_jobs=-1)
-        model.fit(X_train, y_train)
-        test_acc = float(accuracy_score(y_test, model.predict(X_test)))
-        cv_mean = float(cv.mean())
-        cv_std = float(cv.std())
-
-        return {
-            "cv_mean": round(cv_mean, 4),
-            "cv_std": round(cv_std, 4),
-            "test_score": round(test_acc, 4),
-            "model": model,
-            "feature_cols": feature_cols,
-            "class_labels": class_labels,
-            "y_test": y_test,
-            "preds": model.predict(X_test),
-            "train_score": float(accuracy_score(y_train, model.predict(X_train))),
-            "f1_macro": float(f1_score(y_test, model.predict(X_test), average="macro", zero_division=0)),
-            "n_classes": int(len(np.unique(y))),
-            "test_size": int(len(y_test))
-        }
-    else:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=RANDOM_STATE,
-        )
-
-        n_splits = max(2, min(5, len(X_train) // 10))
-
-        model = _wrap_with_preprocessor(X_train, get_regressor(model_name, params))
-        cv = cross_val_score(clone(model), X_train, y_train, cv=n_splits, scoring="r2", n_jobs=-1)
-        model.fit(X_train, y_train)
-        test_r2 = float(r2_score(y_test, model.predict(X_test)))
-        cv_mean = float(cv.mean())
-        cv_std = float(cv.std())
-
-        return {
-            "cv_mean": round(cv_mean, 4),
-            "cv_std": round(cv_std, 4),
-            "test_score": round(test_r2, 4),
-            "model": model,
-            "feature_cols": feature_cols,
-            "class_labels": None,
-            "y_test": y_test,
-            "preds": model.predict(X_test),
-            "train_score": float(r2_score(y_train, model.predict(X_train))),
-            "rmse": float(root_mean_squared_error(y_test, model.predict(X_test))),
-            "mae": float(mean_absolute_error(y_test, model.predict(X_test))),
-            "test_size": int(len(y_test))
-        }

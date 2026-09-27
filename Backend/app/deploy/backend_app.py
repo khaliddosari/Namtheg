@@ -41,7 +41,9 @@ app = modal.App("namtheg-backend", image=image)
     secrets=[secret],
     cpu=2.0,
     memory=2048,
-    timeout=600,
+    # Runs execute as background tasks inside this function and wait on the
+    # GPU trainer (up to its own 30 min timeout), so allow a full hour.
+    timeout=3600,
     scaledown_window=300,
 )
 @modal.asgi_app()
