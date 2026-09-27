@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { getStatus, getDiagnostics } from "@/lib/api";
+import { cancelRun, getStatus, getDiagnostics, type Diagnostics } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/icon";
 
@@ -155,66 +155,46 @@ plt.savefig("storage/runs/{run_id}/plot.png")`,
 
 type StepStatus = "waiting" | "active" | "done" | "error";
 
-// Sidebar System Diagnostics
+// Sidebar run diagnostics: recorded state only. Training runs on separate GPU
+// containers, so there are no live utilisation numbers to show here.
 function ServerDiagnosticsWidget({ runId }: { runId: string }) {
-  const [cpu, setCpu] = useState(0);
-  const [gpu, setGpu] = useState(0);
-  const [ram, setRam] = useState(0);
-  const [ramTotal, setRamTotal] = useState(16);
-  const [speed, setSpeed] = useState(0);
+  const [diag, setDiag] = useState<Diagnostics | null>(null);
 
   useEffect(() => {
     const fetchDiagnostics = async () => {
       try {
-        const data = await getDiagnostics(runId);
-        setCpu(data.cpu);
-        setGpu(data.gpu);
-        setRam(data.ram);
-        setRamTotal(data.ram_total);
-        setSpeed(data.speed);
+        setDiag(await getDiagnostics(runId));
       } catch (err) {
         console.error("Failed to fetch diagnostics:", err);
       }
     };
 
     fetchDiagnostics();
-    const timer = setInterval(fetchDiagnostics, 2000);
+    const timer = setInterval(fetchDiagnostics, 3000);
     return () => clearInterval(timer);
   }, [runId]);
+
+  const rows: [string, string][] = [
+    ["Stage", diag?.stage ? diag.stage.replace(/_/g, " ") : "waiting to start"],
+    ["Task", diag?.task ? diag.task.replace(/_/g, " ") : "-"],
+    ["Training on", diag?.gpu ?? "-"],
+    ["GPU containers", diag ? String(diag.gpu_calls) : "-"],
+    ["Elapsed", diag?.elapsed_seconds != null ? `${Math.floor(diag.elapsed_seconds / 60)}m ${diag.elapsed_seconds % 60}s` : "-"],
+  ];
 
   return (
     <div className="bg-surface-container border border-outline-variant rounded-xl p-4 font-sans space-y-3 shadow-sm select-none">
       <div className="flex items-center gap-1.5 border-b border-outline-variant pb-2">
         <span className="w-2 h-2 rounded-full bg-success-green animate-pulse" />
-        <h4 className="text-[10px] font-bold text-outline uppercase tracking-wider">Compute Diagnostics</h4>
+        <h4 className="text-[10px] font-bold text-outline uppercase tracking-wider">Run Diagnostics</h4>
       </div>
-      <div className="space-y-2">
-        <div>
-          <div className="flex justify-between text-[10px] font-semibold mb-1 text-on-surface">
-            <span>CPU Node</span>
-            <span className="font-mono">{cpu}%</span>
+      <div className="space-y-1.5">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-3 text-[10px] font-semibold text-on-surface">
+            <span>{label}</span>
+            <span className="font-mono text-primary text-right truncate">{value}</span>
           </div>
-          <div className="w-full bg-surface-container-high h-1 rounded-full overflow-hidden">
-            <div className="bg-primary h-full transition-all duration-500" style={{ width: `${cpu}%` }} />
-          </div>
-        </div>
-        <div>
-          <div className="flex justify-between text-[10px] font-semibold mb-1 text-on-surface">
-            <span>GPU Engine</span>
-            <span className="font-mono">{gpu}%</span>
-          </div>
-          <div className="w-full bg-surface-container-high h-1 rounded-full overflow-hidden">
-            <div className="bg-warning-orange h-full transition-all duration-500" style={{ width: `${gpu}%` }} />
-          </div>
-        </div>
-        <div className="flex justify-between items-center text-[10px] font-semibold text-on-surface pt-1 border-t border-outline-variant/30">
-          <span>RAM Used</span>
-          <span className="font-mono text-primary font-bold">{ram} GB / {ramTotal} GB</span>
-        </div>
-        <div className="flex justify-between items-center text-[10px] font-semibold text-on-surface">
-          <span>Training Speed</span>
-          <span className="font-mono text-success-green font-bold">{speed} rows/s</span>
-        </div>
+        ))}
       </div>
     </div>
   );
@@ -577,7 +557,7 @@ export default function RunningPage() {
           clearInterval(poll); clearTimeout(stepTimer);
           setActiveStep(STEPS.length);
           setIsComplete(true);
-        } else if (s.status === "failed") {
+        } else if (s.status === "failed" || s.status === "cancelled") {
           clearInterval(poll); clearTimeout(stepTimer);
           setFailed(true);
           setErrMsg(s.error ?? "Unknown error.");
@@ -623,8 +603,22 @@ export default function RunningPage() {
             </div>
           </div>
 
-          {/* Compute diagnostics metrics widget */}
+          {/* Run diagnostics widget */}
           <ServerDiagnosticsWidget runId={runId} />
+          {!isComplete && !failed && (
+            <button
+              onClick={async () => {
+                try {
+                  await cancelRun(runId);
+                } catch (e) {
+                  setErrMsg(e instanceof Error ? e.message : "Could not cancel the run.");
+                }
+              }}
+              className="text-[11px] text-error font-bold hover:underline text-left"
+            >
+              Cancel run
+            </button>
+          )}
 
           {/* Staggered steps progress list */}
           <div className="space-y-1 flex-1">
@@ -642,7 +636,7 @@ export default function RunningPage() {
 
         {failed && (
           <div className="bg-error-container border border-error/20 rounded-xl px-4 py-3 space-y-1.5 text-left font-sans animate-scale">
-            <p className="text-xs font-bold text-error">Run execution failed</p>
+            <p className="text-xs font-bold text-error">{errMsg === "Cancelled by the user." ? "Run cancelled" : "Run execution failed"}</p>
             <p className="text-[11px] text-on-surface-variant leading-relaxed">{errMsg}</p>
             <button
               onClick={() => router.push("/")}

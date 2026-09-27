@@ -25,9 +25,21 @@ export interface UploadResponse {
 
 export interface RunStatus {
   run_id: string;
-  status: "uploaded" | "queued" | "running" | "succeeded" | "failed";
-  target?: string;
+  status: "uploading" | "uploaded" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  task?: Task;
+  stage?: string;
+  target?: string | null;
   error?: string;
+}
+
+export type Task = "auto" | "classification" | "regression" | "clustering" | "forecasting" | "image_classification";
+
+export interface StartRunBody {
+  task: Task;
+  target?: string;
+  date_column?: string;
+  series_id_column?: string;
+  horizon?: number;
 }
 
 export interface ModelScore {
@@ -73,10 +85,12 @@ export interface ResultExtra {
 export interface RunResult {
   run_id: string;
   status: string;
-  target?: string;
-  problem_type?: "regression" | "classification";
+  task?: Task;
+  target?: string | null;
+  problem_type?: "regression" | "classification" | "clustering" | "forecasting";
   accuracy_score?: number;
   score_metric?: string;
+  higher_is_better?: boolean;
   plot_path?: string;
   justification?: string;
   model_name?: string;
@@ -85,7 +99,7 @@ export interface RunResult {
   downloads?: DownloadKind[];
 }
 
-export type DownloadKind = "cleaned_csv" | "model";
+export type DownloadKind = "cleaned_csv" | "model" | "forecast";
 
 // A plain link: the backend streams the file, or redirects to a short-lived
 // R2 URL when R2 storage is configured.
@@ -93,7 +107,12 @@ export function downloadUrl(runId: string, kind: DownloadKind): string {
   return `${BASE}/runs/${runId}/download/${kind}`;
 }
 
+// Files up to this size go through the frontend proxy; larger ones are PUT
+// straight to storage with a short-lived URL (needs R2 on the backend).
+export const PROXY_UPLOAD_LIMIT = 30 * 1024 * 1024;
+
 export async function uploadCSV(file: File): Promise<UploadResponse> {
+  if (file.size > PROXY_UPLOAD_LIMIT) return uploadDirect(file);
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${BASE}/upload`, { method: "POST", body: form });
@@ -101,12 +120,33 @@ export async function uploadCSV(file: File): Promise<UploadResponse> {
   return res.json();
 }
 
-export async function startRun(runId: string, target: string): Promise<RunStatus> {
+async function uploadDirect(file: File): Promise<UploadResponse> {
+  const res = await fetch(`${BASE}/uploads/direct`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, size: file.size }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const { run_id, upload_url } = await res.json();
+  const put = await fetch(upload_url, { method: "PUT", body: file });
+  if (!put.ok) throw new Error(`Upload to storage failed (${put.status}).`);
+  const done = await fetch(`${BASE}/uploads/${run_id}/complete`, { method: "POST" });
+  if (!done.ok) throw new Error(await done.text());
+  return done.json();
+}
+
+export async function startRun(runId: string, body: StartRunBody): Promise<RunStatus> {
   const res = await fetch(`${BASE}/runs/${runId}/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target }),
+    body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function cancelRun(runId: string): Promise<RunStatus> {
+  const res = await fetch(`${BASE}/runs/${runId}/cancel`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -154,6 +194,7 @@ export async function getDeployment(runId: string): Promise<Deployment> {
 
 export interface ModelSchema {
   run_id: string;
+  task?: Task;
   model_name?: string;
   problem_type?: "regression" | "classification";
   feature_cols: string[];
@@ -192,6 +233,7 @@ export async function predict(
 export interface PreviewData {
   run_id: string;
   filename?: string;
+  source_format?: string;
   columns: string[];
   n_columns: number;
   preview: Record<string, unknown>[];
@@ -203,12 +245,15 @@ export async function getPreview(runId: string): Promise<PreviewData> {
   return res.json();
 }
 
+// Recorded run state only: training runs on separate GPU containers, so no
+// live utilisation numbers are reported (the old ones were not real).
 export interface Diagnostics {
-  cpu: number;
-  gpu: number;
-  ram: number;
-  ram_total: number;
-  speed: number;
+  status?: string;
+  stage?: string | null;
+  task?: Task | null;
+  gpu?: string;
+  gpu_calls: number;
+  elapsed_seconds?: number | null;
 }
 
 export async function getDiagnostics(runId: string): Promise<Diagnostics> {

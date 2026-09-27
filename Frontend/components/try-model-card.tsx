@@ -114,6 +114,27 @@ export function TryModelCard({
 
   const isClassification = schema?.problem_type === "classification";
 
+  // Forecasts and images have no column form; they're served by the same
+  // endpoint with a different body (see the model package's README).
+  if (schema?.task === "forecasting" || schema?.task === "image_classification") {
+    return (
+      <motion.section
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="glass p-6 text-left"
+      >
+        <h3 className="text-headline-md font-bold text-on-background">Try the Model</h3>
+        <p className="text-xs font-medium text-on-surface-variant mt-1">
+          {schema.task === "forecasting"
+            ? 'This forecaster is live. POST {} to the predict endpoint for the next steps after the training data, or {"history": [{"timestamp", "value"}]} to forecast from your own history.'
+            : 'This image model is live. POST {"images": ["<base64 image>"]} to the predict endpoint.'}
+          {" "}The downloadable model package runs the same predictions locally.
+        </p>
+      </motion.section>
+    );
+  }
+
   return (
     <motion.section
       initial={{ opacity: 0, y: 10 }}

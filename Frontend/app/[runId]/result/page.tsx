@@ -28,12 +28,18 @@ const FONT_EMBED_URLS = [
 let fontEmbedCSSCache: string | null = null;
 
 // Selection metrics the trainer can report (imbalanced targets use macro F1).
-const METRIC_LABELS: Record<string, { short: string; long: string }> = {
-  accuracy: { short: "Accuracy", long: "Cross-Validation Accuracy" },
-  f1_macro: { short: "Macro F1", long: "Cross-Validation Macro F1" },
-  r2: { short: "R²", long: "R² Regression Score" },
+// percent: shown as a percentage; otherwise as a plain number (MASE and
+// silhouette aren't proportions). lowerIsBetter flips ranking and wording.
+const METRIC_LABELS: Record<string, { short: string; long: string; percent: boolean; lowerIsBetter?: boolean }> = {
+  accuracy: { short: "Accuracy", long: "Cross-Validation Accuracy", percent: true },
+  f1_macro: { short: "Macro F1", long: "Cross-Validation Macro F1", percent: true },
+  r2: { short: "R²", long: "R² Regression Score", percent: true },
+  silhouette: { short: "Silhouette", long: "Cluster Silhouette (-1 to 1)", percent: false },
+  mase: { short: "MASE", long: "Backtest MASE (lower is better)", percent: false, lowerIsBetter: true },
 };
-const metricLabel = (metric: string) => METRIC_LABELS[metric] ?? { short: metric, long: metric };
+const metricLabel = (metric: string) => METRIC_LABELS[metric] ?? { short: metric, long: metric, percent: false };
+const formatScore = (value: number, metric: string, digits = 2) =>
+  metricLabel(metric).percent ? `${(value * 100).toFixed(digits)}%` : value.toFixed(4);
 
 /* ─── Metric card ── */
 /* ─── Combined Accuracy + Feature Importance card ── */
@@ -845,7 +851,8 @@ export default function ResultPage() {
 
 
   // Sort model scores for standard comparison
-  const sortedModels = [...models].sort((a, b) => b.cv_mean - a.cv_mean);
+  const lowerIsBetter = result.higher_is_better === false || !!metricLabel(metric).lowerIsBetter;
+  const sortedModels = [...models].sort((a, b) => (lowerIsBetter ? a.cv_mean - b.cv_mean : b.cv_mean - a.cv_mean));
   const winnerModel = models.find(m => m.name === modelName);
 
   return (
@@ -986,6 +993,15 @@ export default function ResultPage() {
                   Cleaned CSV
                 </a>
               )}
+              {result.downloads.includes("forecast") && (
+                <a
+                  href={downloadUrl(runId, "forecast")}
+                  className="btn-glass text-xs px-3 sm:px-4 py-2 rounded-lg flex items-center justify-center gap-1.5"
+                >
+                  <Icon name="table_view" style={{ fontSize: "15px" }} />
+                  Forecast CSV
+                </a>
+              )}
               {result.downloads.includes("model") && (
                 <a
                   href={downloadUrl(runId, "model")}
@@ -1020,7 +1036,8 @@ export default function ResultPage() {
           ) : (
             <div className="glass p-6 flex flex-col items-center justify-center min-h-[280px]">
               <Icon name="bar_chart" className="text-outline opacity-40 animate-pulse" style={{ fontSize: "48px" }} />
-              <p className="text-sm font-bold text-on-surface-variant font-mono mt-3">Feature diagnostics not available for model type</p>
+              <p className="text-3xl font-black text-primary font-mono mt-3">{formatScore(score, metric)}</p>
+              <p className="text-sm font-bold text-on-surface-variant font-mono mt-1">{metricLabel(metric).long}</p>
             </div>
           )}
 
@@ -1086,8 +1103,8 @@ export default function ResultPage() {
                           </div>
                         </td>
                         <td className={cn("p-2 sm:p-5 text-center font-mono text-[11px] sm:text-sm", isWinner ? "text-primary" : "text-on-surface-variant")}>± {(m.cv_std).toFixed(4)}</td>
-                        <td className={cn("p-2 sm:p-5 text-center font-mono text-[11px] sm:text-sm", isWinner ? "text-primary" : "text-on-surface-variant")}>{(m.cv_mean * 100).toFixed(2)}%</td>
-                        <td className={cn("p-2 sm:p-5 text-center font-mono hidden sm:table-cell", isWinner ? "text-primary" : "text-on-surface-variant")}>{testScore !== null ? `${(testScore * 100).toFixed(1)}%` : "—"}</td>
+                        <td className={cn("p-2 sm:p-5 text-center font-mono text-[11px] sm:text-sm", isWinner ? "text-primary" : "text-on-surface-variant")}>{formatScore(m.cv_mean, metric)}</td>
+                        <td className={cn("p-2 sm:p-5 text-center font-mono hidden sm:table-cell", isWinner ? "text-primary" : "text-on-surface-variant")}>{testScore !== null ? formatScore(testScore, metric, 1) : "—"}</td>
                       </tr>
                     );
                   })}

@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
-import { startRun, getPreview } from "@/lib/api";
+import { startRun, getPreview, type StartRunBody } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/icon";
 
 interface PreviewData {
   run_id: string;
   filename?: string;
+  source_format?: string;
   columns: string[];
   n_columns: number;
   preview: Record<string, unknown>[];
@@ -31,6 +32,11 @@ export default function PreviewPage() {
   const router = useRouter();
   const [data, setData] = useState<PreviewData | null>(null);
   const [target, setTarget] = useState<string>("");
+  // What to learn: predict a column, find groups (no target), or forecast over time.
+  const [mode, setMode] = useState<"predict" | "cluster" | "forecast">("predict");
+  const [dateColumn, setDateColumn] = useState<string>("");
+  const [seriesColumn, setSeriesColumn] = useState<string>("");
+  const [horizon, setHorizon] = useState<string>("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,12 +101,30 @@ export default function PreviewPage() {
       });
   }, [runId]);
 
+  const isImages = data?.source_format === "images";
+  const canStart = isImages || mode === "cluster" || (!!target && (mode === "predict" || !!dateColumn));
+
+  function startBody(): StartRunBody {
+    if (isImages) return { task: "image_classification" };
+    if (mode === "cluster") return { task: "clustering" };
+    if (mode === "forecast") {
+      return {
+        task: "forecasting",
+        target,
+        date_column: dateColumn,
+        series_id_column: seriesColumn || undefined,
+        horizon: horizon ? Number(horizon) : undefined,
+      };
+    }
+    return { task: "auto", target };
+  }
+
   async function handleStart() {
-    if (!target) return;
+    if (!canStart) return;
     setStarting(true);
     setError(null);
     try {
-      await startRun(runId, target);
+      await startRun(runId, startBody());
       router.push(`/${runId}/running`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start run.");
@@ -313,11 +337,13 @@ export default function PreviewPage() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 shrink-0">
               <Icon name="target" className="text-primary" />
-              <h3 className="text-headline-md font-bold text-on-surface whitespace-nowrap">Target Variable</h3>
+              <h3 className="text-headline-md font-bold text-on-surface whitespace-nowrap">
+                {isImages ? "Image classification" : mode === "cluster" ? "Find groups" : mode === "forecast" ? "Forecast target" : "Target Variable"}
+              </h3>
             </div>
 
             {/* Dropdown — hidden on mobile, fills space on desktop */}
-            <div className="relative flex-1 hidden md:block">
+            <div className={cn("relative flex-1 hidden", !isImages && mode !== "cluster" && "md:block")}>
               <button
                 type="button"
                 onClick={openDropdown}
@@ -337,10 +363,10 @@ export default function PreviewPage() {
               {error && <p className="text-xs text-error font-medium">{error}</p>}
               <button
                 onClick={handleStart}
-                disabled={!target || starting}
+                disabled={!canStart || starting}
                 className={cn(
                   "btn-primary text-label-md px-4 md:px-6 py-3 rounded-lg",
-                  (!target || starting) && "opacity-50 cursor-not-allowed"
+                  (!canStart || starting) && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <span className="hidden sm:inline">{starting ? "Running..." : "Run"}</span>
@@ -350,8 +376,64 @@ export default function PreviewPage() {
             </div>
           </div>
 
+          {/* Task switch: images have one task, tables three */}
+          {isImages ? (
+            <p className="text-xs text-on-surface-variant">
+              Each folder in the zip is a class; pretrained CNNs are fine-tuned on the GPU to tell them apart.
+            </p>
+          ) : (
+            <div className="flex border border-outline-variant rounded-lg p-0.5 bg-surface-container-low w-full sm:w-fit text-xs font-bold">
+              {([["predict", "Predict a column"], ["cluster", "Find groups"], ["forecast", "Forecast over time"]] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setMode(key)}
+                  className={cn(
+                    "flex-1 sm:flex-none px-3 py-1.5 rounded transition-colors",
+                    mode === key ? "bg-surface-container-lowest text-primary shadow-sm" : "text-outline hover:text-primary"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mode === "cluster" && !isImages && (
+            <p className="text-xs text-on-surface-variant">
+              No target: every column is used to find natural groups (K-Means, HDBSCAN, DBSCAN, Spectral), each row gets a cluster.
+            </p>
+          )}
+
+          {mode === "forecast" && !isImages && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-semibold">
+              <label className="flex flex-col gap-1 text-outline">
+                Date column
+                <select value={dateColumn} onChange={(e) => setDateColumn(e.target.value)}
+                  className="bg-surface-variant border border-outline-variant rounded-lg py-2 px-2 text-sm text-on-surface">
+                  <option value="">Choose...</option>
+                  {data.columns.filter((c) => c !== target).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-outline">
+                Series id (optional)
+                <select value={seriesColumn} onChange={(e) => setSeriesColumn(e.target.value)}
+                  className="bg-surface-variant border border-outline-variant rounded-lg py-2 px-2 text-sm text-on-surface">
+                  <option value="">One series</option>
+                  {data.columns.filter((c) => c !== target && c !== dateColumn).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-outline">
+                Horizon (steps, optional)
+                <input type="number" min={1} max={1000} value={horizon} onChange={(e) => setHorizon(e.target.value)}
+                  placeholder="Auto from frequency"
+                  className="bg-surface-variant border border-outline-variant rounded-lg py-2 px-2 text-sm text-on-surface" />
+              </label>
+            </div>
+          )}
+
           {/* Dropdown — full width on mobile only */}
-          <div className="relative md:hidden">
+          <div className={cn("relative md:hidden", (isImages || mode === "cluster") && "hidden")}>
             <button
               type="button"
               onClick={openDropdown}

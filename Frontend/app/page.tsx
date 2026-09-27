@@ -8,8 +8,8 @@ import { cn } from "@/lib/utils";
 import { Brand } from "@/components/brand";
 import { Icon } from "@/components/icon";
 
-// Must match SUPPORTED_EXTENSIONS in Backend/app/data/ingest.py.
-const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet", ".json", ".jsonl"];
+// Must match UPLOAD_EXTENSIONS in Backend/app/main.py (.zip = images, one folder per class).
+const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet", ".json", ".jsonl", ".zip"];
 
 const VERIFY_STEPS = [
   "Reading CSV byte stream into client buffer...",
@@ -61,9 +61,9 @@ export default function UploadPage() {
       setError(`Unsupported file type. Accepted: ${ACCEPTED_EXTENSIONS.join(", ")}`);
       return;
     }
-    const MAX_SIZE = 30 * 1024 * 1024;  // 30 MB cap
+    const MAX_SIZE = 2 * 1024 * 1024 * 1024;  // over 30 MB uploads go straight to storage (R2)
     if (f.size > MAX_SIZE) {
-      setError("File is too large. Maximum size allowed is 30 MB.");
+      setError("File is too large. Maximum size allowed is 2 GB.");
       return;
     }
     runVerification(f);
@@ -188,7 +188,7 @@ export default function UploadPage() {
                 <>
                   <h4 className="text-base sm:text-lg md:text-headline-md text-on-surface font-semibold mb-2 text-center">Drag &amp; Drop files here</h4>
                   <p className="text-[12px] sm:text-xs md:text-body-md text-on-surface-variant mb-5 text-center max-w-xs md:max-w-md px-2 leading-relaxed">
-                    Supported format: <strong className="font-semibold text-primary font-mono">.CSV</strong> (up to 30 MB). Files are parsed and verified on upload.
+                    Tables (<strong className="font-semibold text-primary font-mono">CSV, Excel, Parquet, JSON</strong>) or a <strong className="font-semibold text-primary font-mono">.zip</strong> of images with one folder per class. Files are parsed and verified on upload.
                   </p>
                   <button
                     className="bg-surface-container-high text-on-surface text-[11px] sm:text-label-md px-4 py-2 sm:px-5 sm:py-2.5 rounded-lg border border-outline-variant group-hover:border-primary group-hover:text-primary transition-all font-semibold"
