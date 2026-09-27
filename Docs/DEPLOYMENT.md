@@ -126,15 +126,16 @@ No frontend code changes are needed: `Frontend/next.config.ts` automatically pro
 
 ---
 
-## 4. Decommissioning Render & Keep-Alive Pingers
+## 4. Decommissioned: Render & Keep-Alive Pingers
 
-Once your Modal backend is live and pointed to by Vercel:
-1. **Render**: Delete or suspend the old backend service in your Render dashboard.
-2. **GitHub Actions Keep-Alive**: Disable the `.github/workflows/keep-alive.yml` workflow in the GitHub Actions tab (or remove the `KEEPALIVE_BACKEND_URL` variable).
-3. **Modal Keep-Alive**: If you previously deployed `app/keepalive.py`, stop it with:
-   ```bash
-   modal app stop namtheg-keepalive
-   ```
+The backend is on Modal now, which starts in ~1-2s on incoming requests and needs no keep-alive
+pinging. The GitHub Actions workflow and Modal cron that used to ping the old Render backend
+(`.github/workflows/keep-alive.yml`, `app/keepalive.py`) have been removed from the repo. If your
+Modal workspace still has a `namtheg-keepalive` app deployed from before, stop it:
+```bash
+modal app stop namtheg-keepalive
+```
+And delete or suspend the old backend service in your Render dashboard if one is still running.
 
 ---
 
