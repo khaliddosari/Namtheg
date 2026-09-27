@@ -1,168 +1,174 @@
-import json
-import logging
-import re
+"""Runs one AutoML job end to end.
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+Division of labour:
+- Deterministic, tested code computes every number: profile, problem-type
+  detection, data audit, imbalance plan, and feature engineering here; the
+  baseline, cross-validation, tuning, and final fit on the GPU service.
+- The LLM investigates the data (the analyst agent, running its code in the
+  sandbox) and writes the summary. Both outputs are validated in code before
+  the pipeline uses them.
+"""
+import logging
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from app import storage
-from app.agent.tools import ALL_TOOLS
-from app.config import settings
+from app.agent import analyst, report
+from app.llm import LLMClient
+from app.pipeline import audit, detect, eda, export, feature_engineering, imbalance, profile, train, visualize
+from app.sandbox import open_sandbox
 
 log = logging.getLogger(__name__)
 
-
-SYSTEM_PROMPT = """You are نَمذِج's AutoML Reasoning Engine - a senior ML engineer
-orchestrating a fixed pipeline of tools to deliver a ranked, justified model for a
-user-supplied CSV. The user has already uploaded the dataset and selected a target
-column. You must drive the pipeline by calling the provided tools in this exact order:
-
-  1. profile_dataset(run_id)
-  2. detect_problem_type(run_id, target)             -> reads problem_type
-  3. run_eda(run_id, target)
-  4. feature_engineer(run_id, target)
-  5. train_model(run_id, target, problem_type)       -> reads score and score_metric
-  6. generate_visualization(run_id, target, problem_type)
-
-After every tool returns, briefly note the key facts from its JSON output. Do not
-fabricate any numbers - only quote values that actually appeared in tool results.
-
-When all six tools have run, return ONLY a JSON object with this exact shape (no
-markdown fences, no extra prose):
-
-{{
-  "accuracy_score": <float, the score returned by train_model, rounded to 4 decimals>,
-  "score_metric":   "<the score_metric string returned by train_model>",
-  "problem_type":   "<regression or classification>",
-  "plot_path":      "<plot_path returned by generate_visualization>",
-  "justification":  "<1-2 sentences explaining why this model fits this data, what the score means in plain terms, and the main weakness or caveat. Keep it extremely brief, direct, and high-impact.>"
-}}
-
-Hard rules:
-- Never claim the model is 'production-ready'.
-- Never invent metrics. If a tool errored, surface the error in justification.
-- The justification must read for a data analyst, not a PhD. Confident, neutral tone, and extremely brief (1-2 sentences).
-"""
-
-USER_PROMPT = """run_id: {run_id}
-target: {target}
-
-Drive the pipeline now and return the final JSON."""
+# The champion must beat the feature-blind baseline's CV score by at least this
+# much (in the selection metric) to count as having learned something.
+BASELINE_MARGIN = 0.01
 
 
-def _extract_json(text: str) -> dict:
-    if not text:
-        raise ValueError("Empty agent output.")
-    # Strip code fences if the model adds them despite instructions.
-    cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", cleaned)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+def _stage(run_id: str, target: str, stage: str) -> None:
+    storage.write_status(run_id, "running", target=target, stage=stage)
+    log.info("Run %s: %s", run_id, stage)
 
 
-def _build_executor() -> AgentExecutor:
-    if not settings.openrouter_api_key:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is not set. Add it to backend/.env to enable the agent."
-        )
-    llm = ChatOpenAI(
-        model=settings.openrouter_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
-        temperature=0.2,
-        default_headers={
-            "HTTP-Referer": settings.openrouter_referer,
-            "X-Title": settings.openrouter_app_title,
+def _close_when_ready(future: Future | None) -> None:
+    """Close the sandbox as soon as it exists, without blocking on its startup."""
+    if future is None:
+        return
+
+    def _close(f: Future) -> None:
+        try:
+            sandbox = f.result()
+        except Exception:
+            return
+        if sandbox is not None:
+            sandbox.close()
+
+    future.add_done_callback(_close)
+
+
+def _facts(target, problem_type, fe_report, metrics, beats_baseline, imbalance_plan, audit_report, analysis) -> dict:
+    """Every number the written summary is allowed to cite."""
+    extra = metrics["extra"]
+    plan = analysis["plan"]
+    critical = [{"column": f["column"], "detail": f["detail"]}
+                for f in audit_report["findings"] if f["severity"] == "critical"]
+    critical += [{"column": None, "detail": f["finding"]}
+                 for f in plan["findings"] if f["severity"] == "critical" and f.get("verified")]
+    return {
+        "target": target,
+        "problem_type": problem_type,
+        "rows_used": fe_report.get("final_row_count"),
+        "features_used": fe_report.get("final_feature_count"),
+        "model": {
+            "name": metrics["model_name"],
+            "metric": metrics["score_metric"],
+            "cv_score": metrics["score"],
+            "test_score": extra.get("test_score"),
+            "train_score": extra.get("train_score"),
+            "overfit_gap": extra.get("overfit_gap"),
         },
-    )
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", USER_PROMPT),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
-    agent = create_tool_calling_agent(llm, ALL_TOOLS, prompt)
-    return AgentExecutor(agent=agent, tools=ALL_TOOLS, verbose=False, max_iterations=12)
+        "other_test_metrics": extra.get("test_metrics", {}),
+        "baseline": extra["baseline"],
+        "beats_baseline": beats_baseline,
+        "candidates": extra.get("all_models", []),
+        "class_imbalance": (
+            {k: imbalance_plan[k] for k in ("ratio", "minority_class", "minority_share", "strategy", "selection_metric")}
+            if imbalance_plan.get("detected") else None
+        ),
+        "trained_on": (extra.get("hardware") or {}).get("gpu"),
+        "critical_findings": critical,
+        "warnings": [f["detail"] for f in audit_report["findings"] if f["severity"] == "warning"][:5],
+        "analysis_summary": plan["summary"] if plan.get("summary_verified") else None,
+        "dropped_by_analysis": [d["column"] for d in plan["drop_columns"]],
+        "open_questions": plan["open_questions"],
+    }
 
 
 def run_agent(run_id: str, target: str) -> dict:
-    storage.write_status(run_id, "running", target=target)
+    storage.write_status(run_id, "running", target=target, stage="starting")
+    llm = LLMClient()
+    executor: ThreadPoolExecutor | None = None
+    sandbox_future: Future | None = None
+    if llm.configured:
+        # Start the sandbox now so its cold start overlaps profiling and the audit.
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sandbox")
+        sandbox_future = executor.submit(open_sandbox, storage.dataset_path(run_id))
     try:
-        log.info("Starting direct Python orchestration pipeline for run %s", run_id)
-        
-        # Step 1: profile_dataset(run_id)
-        from app.pipeline import profile
-        log.info("Direct pipeline: profiling dataset...")
-        profile.profile_dataset(run_id)
+        _stage(run_id, target, "profile")
+        prof = profile.profile_dataset(run_id)
 
-        # Step 2: detect_problem_type(run_id, target) -> reads problem_type
-        from app.pipeline import detect
-        log.info("Direct pipeline: detecting problem type...")
+        _stage(run_id, target, "detect")
         detection = detect.detect_problem_type(run_id, target)
-        problem_type = detection.get("problem_type", "classification")
 
-        # Step 3: run_eda(run_id, target)
-        from app.pipeline import eda
-        log.info("Direct pipeline: running EDA...")
+        _stage(run_id, target, "audit")
+        audit_report = audit.audit_dataset(run_id, target, detection["problem_type"])
+
+        _stage(run_id, target, "analysis")
+        analysis = analyst.run_analyst(run_id, target, prof, detection, audit_report, llm, sandbox_future)
+        _close_when_ready(sandbox_future)
+        sandbox_future = None
+        storage.write_json(run_id, "analysis.json", {k: v for k, v in analysis.items() if k != "cells"})
+        storage.write_json(run_id, "agent_log.json", {"cells": analysis["cells"], "notes": analysis["notes"]})
+        plan = analysis["plan"]
+        problem_type = plan["problem_type"]
+        if problem_type != detection["problem_type"]:
+            audit_report = audit.audit_dataset(run_id, target, problem_type)
+
+        _stage(run_id, target, "eda")
         eda.run_eda(run_id, target)
 
-        # Step 4: feature_engineer(run_id, target)
-        from app.pipeline import feature_engineering
-        log.info("Direct pipeline: engineering features...")
-        feature_engineering.feature_engineer(run_id, target)
+        _stage(run_id, target, "feature_engineering")
+        fe_report = feature_engineering.feature_engineer(run_id, target, extra_drops=plan["drop_columns"])
+        export.export_cleaned_csv(run_id)
 
-        # Step 5: train_model(run_id, target, problem_type) -> reads score and score_metric
-        from app.pipeline import train
-        log.info("Direct pipeline: training model candidates...")
-        metrics = train.train_model(run_id, target, problem_type)
-        accuracy_score = metrics.get("score", 0.0)
-        score_metric = metrics.get("score_metric", "accuracy")
+        # Decided on exactly the rows that will be trained on, before any model is fit.
+        imbalance_plan = imbalance.assess(storage.load_engineered(run_id)[target], problem_type)
+        storage.write_json(run_id, "imbalance.json", imbalance_plan)
 
-        # Step 6: generate_visualization(run_id, target, problem_type)
-        from app.pipeline import visualize
-        log.info("Direct pipeline: generating plots...")
+        _stage(run_id, target, "train")
+        metrics = train.train_model(run_id, target, problem_type, imbalance_plan)
+        extra = metrics["extra"]
+        beats_baseline = float(metrics["score"]) > extra["baseline"]["cv_mean"] + BASELINE_MARGIN
+
+        _stage(run_id, target, "visualize")
         viz_info = visualize.generate_visualization(run_id, target, problem_type)
-        plot_path = viz_info.get("plot_path", "")
 
-        # Trigger dynamic hyperparameter scanning and agentic justification loop!
-        from app.agent.optimization import run_fine_tuning_loop
-        log.info("Direct pipeline: running optimization fine-tuning loop...")
-        optimized = run_fine_tuning_loop(
-            run_id=run_id,
-            target=target,
-            problem_type=problem_type,
-            baseline_results={
-                "model_name": metrics.get("model_name"),
-                "score": accuracy_score,
-                "score_metric": score_metric,
-                "extra": metrics.get("extra", {}),
-            }
-        )
+        _stage(run_id, target, "report")
+        facts = _facts(target, problem_type, fe_report, metrics, beats_baseline, imbalance_plan, audit_report, analysis)
+        names = [c["name"] for c in prof["columns"]] + [m["name"] for m in facts["candidates"]] + [target]
+        justification, grounding = report.write_justification(llm, facts, names)
 
+        extra.update({
+            "beats_baseline": beats_baseline,
+            "imbalance": imbalance_plan,
+            "audit": audit_report,
+            "analysis": {k: analysis.get(k) for k in ("status", "notes", "code_runs", "seconds")} | {
+                "problem_type_source": plan["problem_type_source"],
+                "summary": plan["summary"],
+                "findings": plan["findings"],
+                "drop_columns": plan["drop_columns"],
+                "open_questions": plan["open_questions"],
+            },
+            "grounding": grounding,
+            "llm": llm.summary(),
+        })
         final = {
             "run_id": run_id,
             "status": "succeeded",
             "target": target,
             "problem_type": problem_type,
-            "accuracy_score": optimized.get("score"),
-            "score_metric": score_metric,
-            "plot_path": plot_path,
-            "justification": (
-                (optimized.get("justification") or "").replace("—", "-").replace("–", "-")
-                or f"{optimized.get('model_name', 'The champion model')} achieved the strongest "
-                   f"cross-validation performance ({optimized.get('score', 0):.4f} {score_metric}) "
-                   f"among all candidates and was selected as champion."
-            ),
-            "model_name": optimized.get("model_name"),
-            "extra": optimized.get("extra", {}),
+            "accuracy_score": metrics["score"],
+            "score_metric": metrics["score_metric"],
+            "plot_path": viz_info.get("plot_path", ""),
+            "justification": justification,
+            "model_name": metrics["model_name"],
+            "extra": extra,
         }
+        _stage(run_id, target, "package")
+        export.build_model_package(run_id, final)
+        final["downloads"] = ["cleaned_csv", "model"]
         storage.write_json(run_id, "result.json", final)
-        storage.write_status(run_id, "succeeded")
-        log.info("Direct pipeline orchestration completed successfully for run %s!", run_id)
+        storage.write_status(run_id, "succeeded", stage="done")
+        log.info("Run %s succeeded.", run_id)
         return final
     except Exception as e:
         log.exception("Agent run failed for %s", run_id)
@@ -175,3 +181,7 @@ def run_agent(run_id: str, target: str) -> dict:
         storage.write_json(run_id, "result.json", err)
         storage.write_status(run_id, "failed", error=str(e))
         return err
+    finally:
+        _close_when_ready(sandbox_future)
+        if executor is not None:
+            executor.shutdown(wait=False)
