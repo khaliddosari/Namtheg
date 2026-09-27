@@ -109,14 +109,15 @@ def _single_feature_score(x: pd.Series, y: pd.Series, problem_type: str) -> floa
     return max(float(1 - ((y - preds.astype(float)) ** 2).sum() / total), rank_r2)
 
 
-def audit_dataset(run_id: str, target: str, problem_type: str) -> dict:
+def audit_dataset(run_id: str, target: str | None, problem_type: str) -> dict:
+    """target is None for clustering: target, imbalance and leakage checks are skipped."""
     df = storage.load_dataset(run_id)
-    if target not in df.columns:
+    if target is not None and target not in df.columns:
         raise ValueError(f"Target column '{target}' not found.")
     n = len(df)
     features = [c for c in df.columns if c != target]
     findings: list[dict] = []
-    y = df[target]
+    y = df[target] if target is not None else pd.Series(dtype=float)
 
     # -- target ------------------------------------------------------------
     target_missing = int(y.isna().sum())
@@ -150,7 +151,7 @@ def audit_dataset(run_id: str, target: str, problem_type: str) -> dict:
                 f"({', '.join(f'{k!r}: {int(v)}' for k, v in rare.items())}); scores for them are unreliable.",
                 target, classes={str(k): int(v) for k, v in rare.items()},
             ))
-    elif is_numeric_dtype(y):
+    elif target is not None and is_numeric_dtype(y):
         skew = float(y.skew())
         if abs(skew) > 2:
             findings.append(_finding(
@@ -168,7 +169,7 @@ def audit_dataset(run_id: str, target: str, problem_type: str) -> dict:
             "folds and inflate scores.",
             count=dup_rows, percent=_pct(dup_rows, n),
         ))
-    dup_features = int(df.duplicated(subset=features).sum()) - dup_rows if features else 0
+    dup_features = int(df.duplicated(subset=features).sum()) - dup_rows if features and target is not None else 0
     if dup_features > 0:
         findings.append(_finding(
             "conflicting_rows", "info",
@@ -225,6 +226,8 @@ def audit_dataset(run_id: str, target: str, problem_type: str) -> dict:
             ))
 
     # -- leakage suspects ------------------------------------------------------
+    if target is None:
+        return _report(run_id, target, problem_type, n, df, class_balance, imbalance_info, findings)
     sample = df[df[target].notna()]
     if len(sample) > LEAKAGE_SAMPLE_ROWS:
         sample = sample.sample(LEAKAGE_SAMPLE_ROWS, random_state=0)
@@ -246,6 +249,10 @@ def audit_dataset(run_id: str, target: str, problem_type: str) -> dict:
             c, single_feature_score=round(score, 4), metric=metric,
         ))
 
+    return _report(run_id, target, problem_type, n, df, class_balance, imbalance_info, findings)
+
+
+def _report(run_id, target, problem_type, n, df, class_balance, imbalance_info, findings) -> dict:
     findings.sort(key=lambda f: SEVERITY_ORDER[f["severity"]])
     report = {
         "target": target,
