@@ -39,17 +39,33 @@ Deploying the backend to Modal solves all Render free-tier constraints:
    Verify both keys before deploying: `python -m scripts.check_llm`.
 
 ### Deploy
-All model training runs on an NVIDIA **H200** (`app/training/gpu_app.py`); there is no CPU
-or local training path, so runs fail until this service is deployed. Modal only allows GPU
-functions on accounts with a **payment method** on file (Settings → Billing), even when
-paid from free credits. H200 is billed per second at about $4.54/hr.
-
 ```bash
-modal deploy app/deploy/backend_app.py
-modal deploy app/training/gpu_app.py       # whenever app/training/ changes
-modal deploy app/deploy/inference_app.py   # whenever its pins or app/training/core.py change
+modal deploy app/deploy/backend_app.py     # HTTP API + the run_job function
+modal deploy app/training/gpu_app.py       # GPU training service; again whenever app/training/ changes
+modal deploy app/deploy/inference_app.py   # live predictions; again when its pins or app/training/runtime.py change
 modal app stop modelforge-train            # the old 8-CPU trainer, no longer used
 ```
+
+**Runs are background jobs.** `/runs/{id}/start` spawns `run_job` (in `backend_app.py`), which runs the
+whole pipeline in its own container with a 6-hour limit, independent of any HTTP request, so there is
+no request timeout to hit. The frontend polls `/status`; `/runs/{id}/cancel` stops the job and any GPU
+work it started. Locally (`uvicorn`), runs use in-process background tasks instead.
+
+**All model training runs on NVIDIA H200s** (`app/training/gpu_app.py`); there is no CPU or local
+training path, so runs fail until this service is deployed. Modal only allows GPU functions on
+accounts with a **payment method** on file (Settings → Billing), even when paid from free credits.
+H200 is billed per second at about $4.54/hr. The service has two images:
+
+| Function | Image | Runs |
+|----------|-------|------|
+| `train_classic` | cuML, XGBoost, CatBoost, Optuna, hdbscan | tabular model groups (boosted trees; SVM/KNN/linear) and clustering |
+| `train_deep` | PyTorch, timm, sentence-transformers, Chronos | one forecaster or one image CNN per call |
+| `embed_text` | same as `train_deep` | pretrained embeddings for free-text columns |
+
+A run fans out across GPUs in parallel (2 containers for a table, up to 5 for forecasting, 3 for images).
+`MAX_PARALLEL_GPUS` in `gpu_app.py` caps concurrent H200s per function (default 3) to bound cost.
+Pretrained weights (text encoder, Chronos-2, three CNNs) are baked into the deep image at build time.
+
 The GPU and inference images pin identical library versions (`tests/test_training.py`
 enforces it); change them together and redeploy both.
 
@@ -65,7 +81,15 @@ Modal Sandbox per run under the `namtheg-sandbox` app. The first run builds its 
 
 Every run artifact is then mirrored to the bucket, runs missing from the Modal Volume are
 restored from it, and the result page's downloads redirect to presigned URLs that expire
-after 15 minutes. No bucket CORS setup is needed: downloads are plain browser navigations.
+after 15 minutes.
+
+R2 also enables **large uploads** (over 30 MB, up to 2 GB, e.g. image zips): the browser PUTs the file
+straight to the bucket with a short-lived URL, skipping the frontend proxy and the backend. That needs
+one CORS rule on the bucket (R2 → bucket → Settings → CORS policy):
+```json
+[{"AllowedOrigins": ["https://namtheg.khalid-ai.dev"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600}]
+```
+Downloads need no CORS rule: they are plain browser navigations. Without R2, uploads are capped at 30 MB.
 
 Modal will output your permanent public URL, for example:
 ```

@@ -46,16 +46,16 @@ This repository is structured as a modern monorepo separating frontend UI from b
 
 ## 🧠 AutoML Pipeline Flow
 
-When you select a target column and click **Start AutoML**:
+Upload a table (CSV, Excel, Parquet, JSON) or a `.zip` of images, then choose what to learn:
 
-1. **Ingest (at upload)**: the file is converted once into a typed Parquet DataFrame; every later step reads that, never the raw file.
-2. **Profile, detect, audit**: schema and missing values, regression vs classification, and deterministic checks for leakage suspects, duplicates, class imbalance, identifiers and temporal columns.
-3. **Analyst agent**: GPT-6 Sol writes and runs pandas code in a Modal Sandbox (gVisor, no network, no secrets) to investigate what the audit can't settle, then submits validated decisions: columns to drop with evidence, findings, and open questions it won't guess at.
-4. **Imbalance plan**: decided before any model is fit. Imbalanced targets train with balanced class weights (computed inside each fold) and are judged by macro F1, not accuracy.
-5. **Train & tune on an H200 GPU**: XGBoost (depth-wise and leaf-wise) and CatBoost, cross-validated with preprocessing fitted inside each fold, next to a feature-blind baseline; the best is tuned with Optuna by CV mean, never the test set. No CPU or local training path exists.
-6. **Visualize**: Predicted-vs-Actual (regression) or a confusion matrix (classification).
-7. **Grounded justification**: a short write-up whose every number is verified against computed results, with a deterministic fallback.
-8. **Downloads**: the cleaned dataset as CSV, and the winning model package (weights in native XGBoost/CatBoost format, metadata, and a working `predict.py`). Optionally stored in Cloudflare R2 and served through expiring links.
+| Task | Models (all trained on NVIDIA H200 GPUs, in parallel) |
+|------|--------------------------------------------------------|
+| **Predict a column** (classification / regression) | XGBoost, CatBoost, SVM, KNN, logistic / ridge regression |
+| **Find groups** (clustering, no target) | K-Means, HDBSCAN, DBSCAN, Spectral |
+| **Forecast over time** | Chronos-2 (pretrained), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags |
+| **Image classification** | ConvNeXt, EfficientNet, ResNet (pretrained, fine-tuned) |
+
+Every run: the upload becomes a typed DataFrame once; deterministic checks (leakage, duplicates, imbalance, time-series gaps) run first; for tables an analyst agent (GPT-6 Sol) investigates with code in an isolated sandbox; imbalance is handled before modelling; models train as a background job on GPUs with early stopping and pruned Optuna search, next to a naive baseline; free-text columns are embedded with a pretrained multilingual encoder; and the written summary may only cite numbers the pipeline computed. Downloads: the cleaned data (CSV), the model package (weights, `predict.py`), and forecasts.
 
 ---
 
