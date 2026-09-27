@@ -1,18 +1,24 @@
 import json as _json
 import logging
+import shutil
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import joblib
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from app import storage
+from app import r2, storage
 from app.agent.orchestrator import run_agent
 from app.config import settings
+from app.data.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest_file
 from app.deploy.modal_deploy import deploy_run
+from app.pipeline import export
+from app.pipeline.train import GPU_APP_NAME
 from app.schemas import StartRunRequest
 
 logging.basicConfig(level=settings.log_level)
@@ -34,69 +40,74 @@ app.add_middleware(
 def health() -> dict:
     return {
         "status": "ok",
-        "llm_configured": bool(settings.openrouter_api_key),
-        "llm_provider": "openrouter",
-        "llm_model": settings.openrouter_model,
+        "llm_configured": bool(settings.openai_api_key or settings.openrouter_api_key),
+        "llm_provider": "openai" if settings.openai_api_key else "openrouter",
+        "llm_model": settings.llm_primary_model if settings.openai_api_key else settings.openrouter_model,
+        "llm_primary": {"model": settings.llm_primary_model, "configured": bool(settings.openai_api_key)},
+        "llm_fallback": {"model": settings.openrouter_model, "configured": bool(settings.openrouter_api_key)},
+        "sandbox_backend": settings.sandbox_backend,
+        "training_service": GPU_APP_NAME,
+        "r2_enabled": r2.enabled(),
     }
 
 
+MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB cap
+
+
 @app.post("/upload")
-async def upload_csv(file: UploadFile = File(...)) -> dict:
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(400, "Only .csv files are accepted.")
+async def upload_dataset(file: UploadFile = File(...)) -> dict:
+    """Store the raw upload, convert it once to a typed Parquet DataFrame, and
+    return a preview. Every later stage reads the Parquet copy."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type. Accepted: {', '.join(SUPPORTED_EXTENSIONS)}.")
     run_id = storage.new_run_id()
-    dest = storage.dataset_path(run_id)
-    
-    MAX_SIZE = 30 * 1024 * 1024  # 30 MB cap
+    raw = storage.raw_upload_path(run_id, ext)
+
     total_bytes = 0
     try:
-        with dest.open("wb") as f:
+        with raw.open("wb") as f:
             while chunk := await file.read(1024 * 1024):
                 total_bytes += len(chunk)
-                if total_bytes > MAX_SIZE:
-                    f.close()  # close the handle before deleting
-                    if dest.exists():
-                        dest.unlink()
+                if total_bytes > MAX_UPLOAD_BYTES:
                     raise HTTPException(413, "File too large. Maximum size allowed is 30 MB.")
                 f.write(chunk)
-        storage.sync_commit()
-    except HTTPException:
-        raise
-    except Exception as e:
-        if dest.exists():
-            dest.unlink()
-        raise HTTPException(500, f"Failed to save file: {e}")
-
-    try:
-        df = pd.read_csv(dest, nrows=5)
-    except Exception as e:
-        if dest.exists():
-            dest.unlink()
-        raise HTTPException(400, f"Could not parse CSV: {e}")
-    try:
+        report = await run_in_threadpool(
+            ingest_file, raw, storage.run_dir(run_id) / storage.DATASET_FILE, file.filename
+        )
+        storage.persist(run_id, f"raw/{raw.name}")
+        storage.persist(run_id, storage.DATASET_FILE)
+        storage.write_json(run_id, "ingest.json", report)
         storage.write_status(run_id, "uploaded", filename=file.filename)
-        # Roundtrip through pandas' JSON writer to safely handle NaN, Inf,
-        # Timestamps and numpy scalar types that the default encoder rejects.
-        columns = [str(c) for c in df.columns.tolist()]
-        preview = _json.loads(df.to_json(orient="records", date_format="iso"))
-        return {
-            "run_id": run_id,
-            "filename": file.filename,
-            "columns": columns,
-            "preview": preview,
-        }
+        df = storage.dataset_head(run_id, 5)
+    except HTTPException:
+        shutil.rmtree(storage.run_dir(run_id), ignore_errors=True)
+        raise
+    except IngestError as e:
+        shutil.rmtree(storage.run_dir(run_id), ignore_errors=True)
+        raise HTTPException(400, str(e))
     except Exception as e:
-        log.exception("Upload post-processing failed for run %s", run_id)
-        if dest.exists():
-            dest.unlink()
-        raise HTTPException(500, f"Upload post-processing failed: {e}")
+        log.exception("Upload failed for run %s", run_id)
+        shutil.rmtree(storage.run_dir(run_id), ignore_errors=True)
+        raise HTTPException(500, f"Upload failed: {e}")
+
+    # Roundtrip through pandas' JSON writer to safely handle NaN, Inf,
+    # Timestamps and numpy scalar types that the default encoder rejects.
+    return {
+        "run_id": run_id,
+        "filename": file.filename,
+        "columns": [str(c) for c in df.columns],
+        "preview": _json.loads(df.to_json(orient="records", date_format="iso")),
+        "n_rows": report["n_rows"],
+        "ingest": {k: report[k] for k in ("source_format", "actions", "warnings")},
+    }
 
 
 @app.get("/runs/{run_id}/preview")
 def preview(run_id: str) -> dict:
     if not storage.run_exists(run_id):
         raise HTTPException(404, "run_id not found")
-    df = pd.read_csv(storage.dataset_path(run_id), nrows=20)
+    df = storage.dataset_head(run_id, 20)
     status_data = storage.read_status(run_id) or {}
     filename = status_data.get("filename", "dataset.csv")
     columns = [str(c) for c in df.columns.tolist()]
@@ -114,9 +125,9 @@ def preview(run_id: str) -> dict:
 def start_run(run_id: str, req: StartRunRequest, background: BackgroundTasks) -> dict:
     if not storage.run_exists(run_id):
         raise HTTPException(404, "run_id not found")
-    df = pd.read_csv(storage.dataset_path(run_id), nrows=1)
-    if req.target not in df.columns:
-        raise HTTPException(400, f"Target '{req.target}' not in columns: {df.columns.tolist()}")
+    columns = storage.dataset_columns(run_id)
+    if req.target not in columns:
+        raise HTTPException(400, f"Target '{req.target}' not in columns: {columns}")
     storage.write_status(run_id, "queued", target=req.target)
     background.add_task(run_agent, run_id, req.target)
     return {"run_id": run_id, "status": "queued", "target": req.target}
@@ -137,6 +148,44 @@ def result(run_id: str) -> JSONResponse:
     if result is None:
         raise HTTPException(409, "Run has not produced a result yet.")
     return JSONResponse(result)
+
+
+DOWNLOADS = {
+    # kind: (artifact, filename suffix)
+    "cleaned_csv": (export.CLEANED_CSV, "_cleaned.csv"),
+    "model": (export.MODEL_PACKAGE, "_model.zip"),
+}
+
+
+@app.get("/runs/{run_id}/download/{kind}")
+def download(run_id: str, kind: str):
+    """cleaned_csv: the dataset the models trained on. model: the winning model
+    package (pipeline, native weights, metadata, predict.py). With R2 on, this
+    redirects to a presigned URL that expires after R2_URL_TTL_SECONDS."""
+    if kind not in DOWNLOADS:
+        raise HTTPException(404, f"Unknown download {kind!r}. Available: {', '.join(DOWNLOADS)}.")
+    if not storage.run_exists(run_id):
+        raise HTTPException(404, "run_id not found")
+    name, suffix = DOWNLOADS[kind]
+    stem = Path((storage.read_status(run_id) or {}).get("filename") or "dataset").stem
+    filename = f"{stem}{suffix}"
+    if r2.exists(run_id, name):
+        return RedirectResponse(r2.presigned_download_url(run_id, name, filename), status_code=307)
+    path = storage.artifact_path(run_id, name)
+    if not path.exists():
+        raise HTTPException(409, "Not available yet - finish a successful run first.")
+    return FileResponse(path, filename=filename)
+
+
+@app.get("/runs/{run_id}/agent_log")
+def agent_log(run_id: str) -> dict:
+    """Every code cell the analyst agent ran in the sandbox, with its output."""
+    if not storage.run_exists(run_id):
+        raise HTTPException(404, "run_id not found")
+    data = storage.read_json(run_id, "agent_log.json")
+    if data is None:
+        raise HTTPException(409, "The analysis has not run yet.")
+    return {"run_id": run_id, **data}
 
 
 @app.get("/runs/{run_id}/plot")
@@ -183,16 +232,21 @@ def deployment(run_id: str) -> dict:
 def model_schema(run_id: str) -> dict:
     if not storage.run_exists(run_id):
         raise HTTPException(404, "run_id not found")
-    bundle_path = storage.artifact_path(run_id, "model.joblib")
-    if not bundle_path.exists():
-        raise HTTPException(409, "No trained model - finish a successful run first.")
-    bundle = joblib.load(bundle_path)
+    # model_meta.json carries everything this endpoint needs, so the backend
+    # never unpickles a model (and needs no GPU-library installs). Runs from
+    # before the GPU trainer only have the sklearn pickle.
+    bundle = storage.read_json(run_id, "model_meta.json")
+    if bundle is None:
+        bundle_path = storage.artifact_path(run_id, "model.joblib")
+        if not bundle_path.exists():
+            raise HTTPException(409, "No trained model - finish a successful run first.")
+        bundle = joblib.load(bundle_path)
 
     # First engineered row gives a realistic baseline for the predict form.
     sample: dict = {}
     eng_path = storage.engineered_path(run_id)
-    if eng_path.exists():
-        row = pd.read_csv(eng_path, nrows=1)
+    if eng_path.exists() or (storage.run_dir(run_id) / "engineered.csv").exists():
+        row = storage.engineered_head(run_id, 1)
         target = storage.read_status(run_id).get("target")
         for c in bundle["feature_cols"]:
             if c in row.columns:
@@ -289,9 +343,7 @@ def get_run_diagnostics(run_id: str) -> dict:
         row_count = profile.get("n_rows", 10000)
     else:
         try:
-            path = storage.dataset_path(run_id)
-            if path.exists():
-                row_count = max(100, int(path.stat().st_size / 120))
+            row_count = max(100, int(storage.read_json(run_id, "ingest.json")["n_rows"]))
         except Exception:
             pass
 
