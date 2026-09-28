@@ -5,7 +5,9 @@ parallel on separate GPUs. Within a group, on the same held-out split and CV
 folds:
 1. Every candidate is cross-validated with default parameters.
 2. The group's best is tuned with Optuna (TPE sampler, median pruning after
-   each fold, so weak trials stop early), selected by CV mean only.
+   each fold, so weak trials stop early), selected by CV mean only. The search
+   ends once TUNING_PATIENCE trials in a row fail to beat the best by more than
+   the noise in its CV folds.
 3. It is refit on the training split and scored once on the test split.
 
 Gradient-boosted trees use early stopping on a slice of each training fold
@@ -50,6 +52,7 @@ EARLY_STOPPING_ROUNDS = 50
 EARLY_STOPPING_FRACTION = 0.1
 SVM_MAX_ROWS = 100_000  # kernel SVM cost grows quadratically; past this it isn't worth the GPU time
 KNN_MAX_ROWS = 1_000_000
+TUNING_PATIENCE = 5  # trials in a row without a gain beyond CV noise before tuning stops
 
 GBDT = ("XGBoost", "XGBoost Leaf-wise", "CatBoost")
 FAMILY = {"XGBoost": "gbdt", "XGBoost Leaf-wise": "gbdt", "CatBoost": "gbdt",
@@ -323,18 +326,26 @@ def estimator_spec(name: str, est) -> tuple[dict, str, bytes]:
 
 # -- tuning ------------------------------------------------------------------------
 
-def tune(name, X, y, folds, task, device, balanced, n_classes, metric, start_score, n_trials, timeout):
+def cv_noise(fold_scores: list[float]) -> float:
+    """Standard error of a CV mean: gains smaller than this are indistinguishable from fold luck."""
+    return float(np.std(fold_scores) / np.sqrt(len(fold_scores)))
+
+
+def tune(name, X, y, folds, task, device, balanced, n_classes, metric, start_score, n_trials, timeout, min_gain=0.0):
     """Optuna TPE with median pruning. The defaults win unless a trial beats
-    them on CV mean."""
+    them on CV mean. Stops early after TUNING_PATIENCE trials in a row (pruned
+    and failed ones included) that beat the best by no more than min_gain."""
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     best = {"params": dict(DEFAULT_PARAMS[name]), "score": start_score}
+    stale = {"trials": 0}
     rows = [{"trial": 0, "parameters": "Baseline Settings", "score": round(start_score, 4),
              "result": "Defaults (CV mean)"}]
 
     def objective(trial):
         params = search_space(name, trial)
+        stale["trials"] += 1
         try:
             value = float(np.mean(cross_validate(name, params, X, y, folds, task, device, balanced,
                                                  n_classes, metric, trial=trial)))
@@ -347,6 +358,8 @@ def tune(name, X, y, folds, task, device, balanced, n_classes, metric, start_sco
                          "result": f"Failed: {str(e)[:80]}"})
             raise
         delta = value - best["score"]
+        if delta > min_gain:
+            stale["trials"] = 0
         if value > best["score"]:
             best.update(params=params, score=value)
             result = f"New best! CV +{delta:.4f}"
@@ -361,7 +374,11 @@ def tune(name, X, y, folds, task, device, balanced, n_classes, metric, start_sco
         sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=4, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=n_trials, timeout=timeout, catch=(Exception,))
+    def stop_when_stale(study, _trial):
+        if stale["trials"] >= TUNING_PATIENCE:
+            study.stop()
+
+    study.optimize(objective, n_trials=n_trials, timeout=timeout, catch=(Exception,), callbacks=[stop_when_stale])
     return best["params"], best["score"], rows
 
 
@@ -436,10 +453,11 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         result["seconds"] = round(time.monotonic() - started, 1)
         return result
 
-    best = max(ok, key=lambda c: c["cv_mean"])["name"]
+    top = max(ok, key=lambda c: c["cv_mean"])
+    best = top["name"]
     params, cv_mean, trials = tune(
         best, X_train, y_train, folds, task, device, balanced, n_classes, metric,
-        start_score=max(c["cv_mean"] for c in ok),
+        start_score=top["cv_mean"], min_gain=cv_noise(top["cv_folds"]),
         n_trials=int(plan.get("tuning_trials", 20)), timeout=int(plan.get("tuning_timeout_seconds", 300)),
     )
 

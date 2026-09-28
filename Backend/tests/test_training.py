@@ -104,6 +104,17 @@ def test_boosted_trees_early_stop_and_refit_with_the_found_tree_count():
     assert 1 <= out["params"]["n_estimators"] <= tabular.MAX_TREES
 
 
+def test_tuning_stops_once_trials_stop_beating_the_cv_noise():
+    df = pd.read_csv(INSURANCE_CSV)
+    X, y = df.drop(columns=["charges"]), df["charges"].to_numpy(dtype=float)
+    folds = common.make_folds("regression", y)
+    # No R2 can beat 0 by more than 1, so every trial is stale.
+    _, _, rows = tabular.tune("Linear", X, y, folds, "regression", "cpu", False, 0, "r2",
+                              start_score=0.0, n_trials=20, timeout=60, min_gain=1.0)
+    assert len(rows) == 1 + tabular.TUNING_PATIENCE
+    assert tabular.cv_noise([0.8, 0.9]) == pytest.approx(0.05 / np.sqrt(2))
+
+
 def test_multiclass_svm_stays_binary_per_class():
     out = _run(pd.read_csv(INSURANCE_CSV), "region", "classification", ["SVM"])
     est = joblib.load(io.BytesIO(out["bundle_bytes"]))["estimator"]["object"]

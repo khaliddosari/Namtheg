@@ -136,7 +136,8 @@ checked without training any model, so the audit itself never needs a GPU).
   instead of the GPU is treated as a failure, not a degraded success.
 - Model groups and, for forecasting and images, individual candidates train in parallel on separate
   GPU containers.
-- Tuning uses a pruned search that abandons a clearly weak trial early, and boosted trees and neural
+- Tuning uses a pruned search that abandons a clearly weak trial early and ends once several trials
+  in a row fail to beat the best by more than its cross-validation noise; boosted trees and neural
   networks use early stopping instead of a fixed training length.
 - Class imbalance is handled before training (balanced weights per fold, macro-F1 selection), not
   by resampling, which can leak duplicate rows across a cross-validation split.
