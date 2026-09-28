@@ -2,6 +2,7 @@
 sandbox and the training engines in-process (see conftest.cpu_training_harness),
 plus the HTTP API around them."""
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app import jobs, storage
 from app.agent import orchestrator
-from app.pipeline import train
+from app.pipeline import export, train
 from tests.conftest import INSURANCE_CSV, ScriptedLLM
 
 ANALYST_SCRIPT = [
@@ -209,7 +210,13 @@ def test_run_ids_are_validated(client):
         assert client.get(f"/runs/{bad}/status").status_code == 404
 
 
-def test_downloads_cleaned_csv_and_working_model_package(uploaded_run, client, tmp_path):
+def test_downloads_cleaned_csv_and_working_model_package(uploaded_run, client, tmp_path, monkeypatch):
+    # Files inside a Modal image have a 1970 mtime; packaging must not choke on it.
+    runtime = tmp_path / "runtime.py"
+    shutil.copy(export.RUNTIME_SOURCE, runtime)
+    os.utime(runtime, (0, 0))
+    monkeypatch.setattr(export, "RUNTIME_SOURCE", runtime)
+
     result = orchestrator.run_agent(uploaded_run, "smoker")
     assert result["status"] == "succeeded", result.get("error")
 

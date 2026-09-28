@@ -352,7 +352,7 @@ def image_archive(run_id: str) -> bytes:
 
         ingest_image_zip(storage.artifact_path(run_id, "raw/source.zip"), root)
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as z:
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED, strict_timestamps=False) as z:
         z.writestr("dataset.parquet", _frame_bytes(manifest[["image", "label"]]))
         for rel in manifest["image"]:
             z.write(root / rel, rel)

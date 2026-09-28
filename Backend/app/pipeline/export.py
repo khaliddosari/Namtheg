@@ -191,7 +191,8 @@ def build_model_package(run_id: str, result: dict) -> str:
     )
 
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+    # Modal images give their files a 1970 mtime, which ZIP can't store: clamp to 1980.
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as z:
         z.write(storage.artifact_path(run_id, "model.joblib"), "model.joblib")
         z.write(RUNTIME_SOURCE, "runtime.py")
         if meta.get("weights_file"):
