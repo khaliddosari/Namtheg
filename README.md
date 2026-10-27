@@ -26,8 +26,9 @@ This repository is structured as a modern monorepo separating frontend UI from b
 │   └── .env.example         # Example local backend environment variables
 │
 ├── Frontend/                # Next.js 15 Frontend
-│   ├── app/                 # Next.js App Router (Upload, Preview, Running, Result, Inference UI)
-│   ├── components/          # Reusable UI component library (TailwindCSS + Framer Motion)
+│   ├── app/                 # Next.js App Router: one-page dashboard (/) and the public /share/[runId] test page
+│   ├── components/          # Dashboard stages + shadcn/ui (Base UI), Tailwind v4, navy glass theme
+│   ├── e2e/                 # Browser flow, layout and accessibility checks against a mock backend (see e2e/README.md)
 │   ├── lib/                 # Frontend API client library
 │   ├── package.json         # Node.js dependencies and scripts
 │   ├── vercel.json          # Vercel build config (set Root Directory to Frontend)
