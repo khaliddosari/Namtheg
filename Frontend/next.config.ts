@@ -20,6 +20,14 @@ const backendOrigin = (
 ).replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // How long `next dev` / `next start` wait on the backend before answering
+    // 500 themselves (default 30 s). An upload proxied to /upload over a slow
+    // link, or a backend that still reads large uploads inside the request,
+    // can hold one for minutes. Vercel's own proxy serves the rewrite in
+    // production.
+    proxyTimeout: 15 * 60 * 1000,
+  },
   async rewrites() {
     return [
       {
