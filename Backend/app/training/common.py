@@ -23,7 +23,7 @@ MAX_FOLDS = 5
 MIN_ROWS_PER_CLASS = 3
 
 # Metrics where smaller is better; everything else is maximised.
-LOWER_IS_BETTER = {"mase", "smape", "rmse", "mae", "davies_bouldin"}
+LOWER_IS_BETTER = {"rmse", "mae"}
 
 
 class CPUFallback(RuntimeError):
@@ -110,7 +110,7 @@ def library_versions() -> dict:
 
     versions = {"python": platform.python_version(), "numpy": np.__version__, "pandas": pd.__version__,
                 "scikit-learn": sklearn.__version__, "joblib": joblib.__version__}
-    for name in ("xgboost", "catboost", "torch", "timm", "sentence_transformers", "chronos"):
+    for name in ("xgboost", "catboost"):
         try:
             module = __import__(name)
             versions[name.replace("_", "-")] = getattr(module, "__version__", "installed")

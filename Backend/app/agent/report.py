@@ -30,11 +30,10 @@ limitation).
 Rules:
 - Use only numbers that appear in the FACTS JSON. Round them if you like, but never compute,
   estimate, or introduce new ones.
-- Respect the metric's direction: model.higher_is_better is false for errors like MASE, where
+- Respect the metric's direction: model.higher_is_better is false for error metrics, where
   lower is better.
 - If the model does not clearly beat the baseline, say so plainly.
-- Clustering has no ground truth: describe the strength of the structure using silhouette_guide,
-  never claim the clusters are correct or meaningful segments.
+- If FACTS has a sample, the models were trained on that random sample of the rows; say so.
 - Never call the model production-ready.
 - Plain text only: no markdown, no lists. Never use an em dash or en dash; use commas or semicolons.
 - Refer to the platform as نَمذِج, not as an agent or AI."""
@@ -104,17 +103,7 @@ def _clean(text: str) -> str:
     return text.strip().replace("—", ", ").replace("–", "-")
 
 
-EVALUATION = {
-    "classification": "a cross-validated", "regression": "a cross-validated", "clustering": "a",
-    "forecasting": "a rolling-backtest", "image_classification": "a validation",
-}
-# Kaufman & Rousseeuw's reading of the average silhouette width.
-SILHOUETTE_LEVELS = ((0.7, "strong"), (0.5, "reasonable"), (0.25, "weak"))
-
-
-def silhouette_guide(value: float) -> dict:
-    level = next((name for cut, name in SILHOUETTE_LEVELS if value >= cut), "no substantial")
-    return {"value": value, "structure": level, "thresholds": {"strong": 0.7, "reasonable": 0.5, "weak": 0.25}}
+EVALUATION = {"classification": "a cross-validated", "regression": "a cross-validated"}
 
 
 def template_justification(facts: dict) -> str:
@@ -122,18 +111,18 @@ def template_justification(facts: dict) -> str:
     m = facts["model"]
     task = facts.get("task", "classification")
     text = f"{m['name']} achieved {EVALUATION.get(task, 'a')} {m['metric']} of {m['score']:.4f}"
-    if m.get("test_score") is not None and task != "clustering":
+    if m.get("test_score") is not None:
         text += f" and {m['test_score']:.4f} on the held-out test set"
     base = facts.get("baseline")
     if base and base.get("cv_mean") is not None:
         direction = " (lower is better)" if m.get("higher_is_better") is False else ""
         text += f", against {base['cv_mean']:.4f} for a naive baseline ({base['name'].lower()}){direction}"
     text += "."
+    sample = facts.get("sample")
+    if sample:
+        text += f" It was trained on a random sample of {sample['rows_used']:,} of the {sample['rows_total']:,} rows."
     if base and facts.get("beats_baseline") is False:
         text += " The model does not meaningfully beat that baseline, so its predictions should not be relied on."
-    if task == "clustering" and facts.get("silhouette_guide"):
-        text += (f" That silhouette indicates {facts['silhouette_guide']['structure']} cluster structure; "
-                 "there is no ground truth, so the clusters are a description of the data, not verified segments.")
     caveat = next((f["detail"] for f in facts.get("critical_findings", [])), None)
     if caveat:
         text += f" Caveat: {caveat}"

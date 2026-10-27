@@ -59,19 +59,9 @@ def test_template_is_always_grounded_and_flags_weak_models():
 
 
 def test_template_states_direction_for_error_metrics():
-    facts = {"task": "forecasting", "model": {"name": "TCN", "metric": "mase", "score": 1.08,
-                                              "higher_is_better": False},
-             "baseline": {"name": "Seasonal naive", "cv_mean": 0.9}, "beats_baseline": False}
+    facts = {"task": "regression", "model": {"name": "KNN", "metric": "rmse", "score": 1.08,
+                                             "higher_is_better": False},
+             "baseline": {"name": "Mean", "cv_mean": 0.9}, "beats_baseline": False}
     text = template_justification(facts)
-    assert "rolling-backtest mase of 1.0800" in text and "lower is better" in text
+    assert "cross-validated rmse of 1.0800" in text and "lower is better" in text
     assert "does not meaningfully beat" in text and ungrounded_numbers(text, facts) == []
-
-
-def test_clustering_template_never_claims_verified_segments():
-    from app.agent.report import silhouette_guide
-
-    facts = {"task": "clustering", "model": {"name": "K-Means", "metric": "silhouette", "score": 0.31},
-             "silhouette_guide": silhouette_guide(0.31)}
-    text = template_justification(facts)
-    assert "weak cluster structure" in text and "not verified segments" in text
-    assert ungrounded_numbers(text, facts) == []

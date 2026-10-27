@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 
 from app.deploy import inference_app
 from app.pipeline import imbalance, train
-from app.training import common, forecasting, gpu_app, tabular, text, vision
+from app.training import common, gpu_app, tabular
 from app.training.runtime import load_bundle
 from tests.conftest import INSURANCE_CSV
 
@@ -32,25 +32,19 @@ def _run(df: pd.DataFrame, target: str, task: str, candidates=None) -> dict:
 # -- deployment invariants -------------------------------------------------------
 
 def test_training_and_inference_images_pin_identical_versions():
-    """scikit-learn objects pickled in the GPU images are loaded in the inference image."""
-    shared = {"numpy", "scipy", "scikit-learn", "pandas", "joblib"}
-    for pins in (gpu_app.CLASSIC_PIN, gpu_app.DEEP_PIN):
-        for pkg in shared:
-            assert pins[pkg] == inference_app.IMAGE_PIN[pkg], pkg
-        assert pins["xgboost"] == inference_app.IMAGE_PIN["xgboost-cpu"]
+    """scikit-learn objects pickled in the GPU image are loaded in the inference image."""
+    for pkg in ("numpy", "scipy", "scikit-learn", "pandas", "joblib"):
+        assert gpu_app.CLASSIC_PIN[pkg] == inference_app.IMAGE_PIN[pkg], pkg
+    assert gpu_app.CLASSIC_PIN["xgboost"] == inference_app.IMAGE_PIN["xgboost-cpu"]
     assert gpu_app.CLASSIC_PIN["catboost"] == inference_app.IMAGE_PIN["catboost"]
-    for pkg in ("timm", "sentence-transformers", "chronos-forecasting"):
-        assert gpu_app.DEEP_PIN[pkg] == inference_app.IMAGE_PIN[pkg], pkg
-    for pkg in ("torch", "torchvision"):
-        assert gpu_app.DEEP_PIN[pkg] == inference_app.TORCH_PIN[pkg], pkg
     assert gpu_app.PYTHON_VERSION == inference_app.PYTHON_VERSION
+    # Classic machine learning only: no deep learning stack in either image.
+    deep = {"torch", "torchvision", "timm", "sentence-transformers", "chronos-forecasting"}
+    assert not deep & (set(gpu_app.CLASSIC_PIN) | set(inference_app.IMAGE_PIN))
 
 
-def test_gpu_settings_and_baked_weights_match_the_engines():
+def test_gpu_settings_match_the_backend():
     assert gpu_app.GPU == train.TRAINING_GPU == "H200"
-    assert gpu_app.PRETRAINED["text"] == text.ENCODER
-    assert gpu_app.PRETRAINED["chronos"] == forecasting.CHRONOS_MODEL
-    assert set(gpu_app.PRETRAINED["timm"]) == set(vision.ARCHITECTURES.values())
 
 
 def test_gpu_only_rejects_cpu_fallback(monkeypatch):

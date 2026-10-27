@@ -84,28 +84,6 @@ export function TryModel({
     }
   };
 
-  // Forecasts and images have no column form; the same endpoint takes a
-  // different body (see the model package's README).
-  if (schema.task === "forecasting" || schema.task === "image_classification") {
-    return (
-      <p className="text-sm leading-relaxed text-muted-foreground">
-        {schema.task === "forecasting" ? (
-          <>
-            This forecaster is live. POST <code className="font-mono text-foreground">{"{}"}</code> to the predict endpoint for the
-            steps after the training data, or <code className="font-mono text-foreground">{'{"history": [{"timestamp", "value"}]}'}</code>{" "}
-            to forecast from your own history.
-          </>
-        ) : (
-          <>
-            This image model is live. POST <code className="font-mono text-foreground">{'{"images": ["<base64 image>"]}'}</code> to the
-            predict endpoint.
-          </>
-        )}{" "}
-        The downloadable model package runs the same predictions locally.
-      </p>
-    );
-  }
-
   const isClassification = schema.problem_type === "classification";
 
   return (

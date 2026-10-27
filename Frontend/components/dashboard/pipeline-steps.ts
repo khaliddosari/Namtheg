@@ -154,7 +154,6 @@ export const STAGE_TO_STEP: Record<string, number> = {
   analysis: 2,
   eda: 2,
   feature_engineering: 3,
-  prepare: 3,
   train: 4,
   visualize: 5,
   report: 5,

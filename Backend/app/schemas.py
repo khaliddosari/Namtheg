@@ -62,12 +62,8 @@ class RunResult(BaseModel):
 
 
 class StartRunRequest(BaseModel):
-    task: Literal["auto", "classification", "regression", "clustering", "forecasting",
-                  "image_classification"] = "auto"
-    target: Optional[str] = Field(None, description="Target column; leave empty for clustering.")
-    date_column: Optional[str] = Field(None, description="Forecasting: the timestamp column.")
-    series_id_column: Optional[str] = Field(None, description="Forecasting: identifies each series, if several.")
-    horizon: Optional[int] = Field(None, description="Forecasting: steps ahead; defaults by frequency.")
+    task: Literal["auto", "classification", "regression"] = "auto"
+    target: Optional[str] = Field(None, description="The column to predict.")
 
 
 class DirectUploadRequest(BaseModel):

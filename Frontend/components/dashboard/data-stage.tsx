@@ -23,7 +23,6 @@ import {
   type PreviewData,
   type RunStatus,
   type StartRunBody,
-  type Task,
   type UploadProgress,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -31,7 +30,6 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
   Combobox,
   ComboboxContent,
@@ -46,26 +44,16 @@ import { Segmented } from "@/components/segmented";
 import { hasStarted, isUploadFailed, type RunState } from "./use-run";
 import type { StageKey } from "./dashboard";
 
-// Must match UPLOAD_EXTENSIONS in Backend/app/main.py (.zip = images, one folder per class).
-const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet", ".json", ".jsonl", ".zip"];
+// Must match UPLOAD_EXTENSIONS in Backend/app/main.py.
+const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet", ".json", ".jsonl"];
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // uploads go straight to storage (R2)
 
-type Mode = "predict" | "cluster" | "forecast";
 // Where the dataset is: nothing yet, loading a linked run, being read on the
 // server after an upload, failed, or here.
 type DataState = "none" | "loading" | "reading" | "error" | "ready";
 
 // Past this, a file still being read has probably stopped being read.
 const READ_PATIENCE_S = 20 * 60;
-
-const MODES: { value: Mode; label: string; short: string }[] = [
-  { value: "predict", label: "Predict a column", short: "Predict" },
-  { value: "cluster", label: "Find groups", short: "Group" },
-  { value: "forecast", label: "Forecast over time", short: "Forecast" },
-];
-
-const modeFromTask = (task?: Task): Mode =>
-  task === "clustering" ? "cluster" : task === "forecasting" ? "forecast" : "predict";
 
 const isBlank = (v: unknown) => v === null || v === undefined || String(v).trim() === "" || String(v).trim() === "-";
 
@@ -121,7 +109,6 @@ export function DataStage({
         : status?.status === "uploading"
           ? "reading"
           : "loading";
-  const [mode, setMode] = useState<Mode>("predict");
   const [target, setTarget] = useState("");
 
   // The last column is the usual home of the label.
@@ -131,7 +118,6 @@ export function DataStage({
 
   const started = hasStarted(status);
   // Once started, show what the run was actually given.
-  const shownMode = started ? modeFromTask(status?.task) : mode;
   const shownTarget = started ? (status?.target ?? "") : target;
 
   return (
@@ -153,9 +139,6 @@ export function DataStage({
         preview={preview}
         data={data}
         started={started}
-        mode={mode}
-        shownMode={shownMode}
-        setMode={setMode}
         target={target}
         shownTarget={shownTarget}
         setTarget={setTarget}
@@ -164,7 +147,7 @@ export function DataStage({
         className="lock:col-span-5"
       />
       <ProfilePanel preview={preview} profile={profile} data={data} className="md:col-span-2 lock:col-span-3" />
-      <PreviewPanel preview={preview} profile={profile} data={data} target={shownMode === "cluster" ? null : shownTarget || null} className="md:col-span-2 lock:col-span-8" />
+      <PreviewPanel preview={preview} profile={profile} data={data} target={shownTarget || null} className="md:col-span-2 lock:col-span-8" />
     </div>
   );
 }
@@ -268,7 +251,7 @@ function UploadPanel({
   return (
     <Panel
       title="Upload"
-      caption="CSV, TSV, Excel, Parquet, JSON, or a .zip of images with one folder per class"
+      caption="CSV, TSV, Excel, Parquet or JSON"
       className={className}
     >
       <div
@@ -491,9 +474,6 @@ function ConfigurePanel({
   preview,
   data,
   started,
-  mode,
-  shownMode,
-  setMode,
   target,
   shownTarget,
   setTarget,
@@ -505,9 +485,6 @@ function ConfigurePanel({
   preview: PreviewData | null;
   data: DataState;
   started: boolean;
-  mode: Mode;
-  shownMode: Mode;
-  setMode: (mode: Mode) => void;
   target: string;
   shownTarget: string;
   setTarget: (target: string) => void;
@@ -516,48 +493,14 @@ function ConfigurePanel({
   className?: string;
 }) {
   const columns = preview?.columns ?? [];
-  const [dateColumn, setDateColumn] = useState("");
-  const [seriesColumn, setSeriesColumn] = useState("");
-  const [horizon, setHorizon] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A date or series column can't also be the value being forecast.
-  useEffect(() => {
-    if (dateColumn && dateColumn === target) setDateColumn("");
-    if (seriesColumn && (seriesColumn === target || seriesColumn === dateColumn)) setSeriesColumn("");
-  }, [target, dateColumn, seriesColumn]);
-
-  const isImages = preview?.source_format === "images";
-  const horizonSteps = horizon.trim() === "" ? undefined : Number(horizon);
-  const horizonValid = horizonSteps === undefined || (Number.isInteger(horizonSteps) && horizonSteps >= 1 && horizonSteps <= 1000);
   // Why Start is disabled, said next to it rather than left to guesswork.
-  const blocker =
-    isImages || mode === "cluster"
-      ? null
-      : !target
-        ? "Pick a target column to start."
-        : mode === "forecast" && !dateColumn
-          ? "Pick the date column to start."
-          : mode === "forecast" && !horizonValid
-            ? "The horizon must be a whole number from 1 to 1000."
-            : null;
+  const blocker = !target ? "Pick a target column to start." : null;
   const canStart = !blocker;
 
-  const body = (): StartRunBody => {
-    if (isImages) return { task: "image_classification" };
-    if (mode === "cluster") return { task: "clustering" };
-    if (mode === "forecast") {
-      return {
-        task: "forecasting",
-        target,
-        date_column: dateColumn,
-        series_id_column: seriesColumn || undefined,
-        horizon: horizonSteps,
-      };
-    }
-    return { task: "auto", target };
-  };
+  const body = (): StartRunBody => ({ task: "auto", target });
 
   const start = async () => {
     if (!runId || !canStart) return;
@@ -575,7 +518,7 @@ function ConfigurePanel({
   return (
     <Panel
       title="Configure run"
-      caption="Pick what to learn. Problem type, feature handling and missing values are detected automatically."
+      caption="Pick the column to predict. Problem type, feature handling and missing values are detected automatically."
       className={className}
     >
       {data === "loading" ? (
@@ -594,114 +537,37 @@ function ConfigurePanel({
         />
       ) : (
         <>
-          {isImages ? (
-            <p className="text-sm text-muted-foreground">
-              Image classification: each folder in the zip is a class, and pretrained CNNs are fine-tuned on the GPU to tell
-              them apart.
-            </p>
-          ) : (
-            <>
-              <Segmented
-                label="What to learn"
-                value={shownMode}
-                onChange={setMode}
-                options={MODES}
-                disabled={started}
-                className="w-full sm:w-fit"
-                itemClassName="flex-1 sm:flex-none"
+          {started ? (
+            <dl>
+              <Fact
+                label="Target column"
+                value={shownTarget || "-"}
+                title={shownTarget}
+                valueClassName="font-mono text-base"
               />
-
-              {shownMode === "cluster" ? (
-                <p className="text-sm text-muted-foreground">
-                  No target: every column is used to find natural groups (K-Means, HDBSCAN, DBSCAN, Spectral), and each row
-                  gets a cluster.
-                </p>
-              ) : started ? (
-                <dl>
-                  <Fact
-                    label={shownMode === "forecast" ? "Value forecast" : "Target column"}
-                    value={shownTarget || "-"}
-                    title={shownTarget}
-                    valueClassName="font-mono text-base"
-                  />
-                </dl>
-              ) : (
-                <Field>
-                  <FieldLabel htmlFor="target-column">{shownMode === "forecast" ? "Value to forecast" : "Target column"}</FieldLabel>
-                  <Combobox
-                    items={columns}
-                    value={target || null}
-                    onValueChange={(v) => v && setTarget(v as string)}
-                  >
-                    <ComboboxInput id="target-column" placeholder="Search columns" className="h-10 w-full font-mono lg:h-8" />
-                    <ComboboxContent>
-                      <ComboboxEmpty>No column matches.</ComboboxEmpty>
-                      <ComboboxList>
-                        {(col: string) => (
-                          <ComboboxItem key={col} value={col} className="font-mono">
-                            {col}
-                          </ComboboxItem>
-                        )}
-                      </ComboboxList>
-                    </ComboboxContent>
-                  </Combobox>
-                  <FieldDescription className="text-xs lock-short:hidden">
-                    {shownMode === "forecast" ? "The numeric series the model projects forward." : "The column the model learns to predict."}
-                  </FieldDescription>
-                </Field>
-              )}
-
-              {shownMode === "forecast" && !started && (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <Field>
-                    <FieldLabel htmlFor="date-column">Date column</FieldLabel>
-                    <NativeSelect id="date-column" value={dateColumn} onChange={(e) => setDateColumn(e.target.value)} className="h-10 lg:h-8">
-                      <NativeSelectOption value="">Choose...</NativeSelectOption>
-                      {columns
-                        .filter((c) => c !== target)
-                        .map((c) => (
-                          <NativeSelectOption key={c} value={c}>
-                            {c}
-                          </NativeSelectOption>
-                        ))}
-                    </NativeSelect>
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="series-column">Series id</FieldLabel>
-                    <NativeSelect id="series-column" value={seriesColumn} onChange={(e) => setSeriesColumn(e.target.value)} className="h-10 lg:h-8">
-                      <NativeSelectOption value="">One series</NativeSelectOption>
-                      {columns
-                        .filter((c) => c !== target && c !== dateColumn)
-                        .map((c) => (
-                          <NativeSelectOption key={c} value={c}>
-                            {c}
-                          </NativeSelectOption>
-                        ))}
-                    </NativeSelect>
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="horizon">Horizon (steps)</FieldLabel>
-                    <Input
-                      id="horizon"
-                      type="number"
-                      min={1}
-                      max={1000}
-                      inputMode="numeric"
-                      dir="ltr"
-                      value={horizon}
-                      onChange={(e) => setHorizon(e.target.value)}
-                      placeholder="30"
-                      aria-invalid={!horizonValid || undefined}
-                      aria-describedby="horizon-help"
-                      className="h-10 font-mono lg:h-8"
-                    />
-                    <FieldDescription id="horizon-help" className="text-xs">
-                      Optional. Leave empty to pick from the data&apos;s frequency.
-                    </FieldDescription>
-                  </Field>
-                </div>
-              )}
-            </>
+            </dl>
+          ) : (
+            <Field>
+              <FieldLabel htmlFor="target-column">Target column</FieldLabel>
+              <Combobox
+                items={columns}
+                value={target || null}
+                onValueChange={(v) => v && setTarget(v as string)}
+              >
+                <ComboboxInput id="target-column" placeholder="Search columns" className="h-10 w-full font-mono lg:h-8" />
+                <ComboboxContent>
+                  <ComboboxEmpty>No column matches.</ComboboxEmpty>
+                  <ComboboxList>
+                    {(col: string) => (
+                      <ComboboxItem key={col} value={col} className="font-mono">
+                        {col}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+              <FieldDescription className="text-xs lock-short:hidden">The column the model learns to predict.</FieldDescription>
+            </Field>
           )}
 
           <div className="mt-auto flex flex-wrap items-center justify-end gap-3 pt-1">

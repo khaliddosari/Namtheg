@@ -173,10 +173,11 @@ def test_upload_excel_and_start(client):
 
 
 @pytest.mark.parametrize("body,message", [
-    ({"task": "clustering", "target": "charges"}, "leave the target empty"),
     ({"task": "regression", "target": "region"}, "numeric target"),
-    ({"task": "forecasting", "target": "charges"}, "date column"),
-    ({"task": "image_classification"}, "zip of images"),
+    # Removed tasks: the 422 lists the three that remain.
+    ({"task": "clustering"}, "regression"),
+    ({"task": "forecasting", "target": "charges"}, "regression"),
+    ({"task": "image_classification"}, "regression"),
     ({"task": "magic", "target": "charges"}, ""),
 ])
 def test_start_validates_the_task(client, uploaded_run, body, message):
@@ -184,9 +185,9 @@ def test_start_validates_the_task(client, uploaded_run, body, message):
     assert r.status_code in (400, 422) and message in r.text
 
 
-def test_no_target_means_clustering(client, uploaded_run):
+def test_a_target_is_required(client, uploaded_run):
     r = client.post(f"/runs/{uploaded_run}/start", json={})
-    assert r.status_code == 200 and client.started[-1] == {"task": "clustering", "target": None}
+    assert r.status_code == 400 and "target column" in r.text
 
 
 def test_cancel_and_diagnostics(client, uploaded_run):
@@ -243,7 +244,6 @@ def test_downloads_cleaned_csv_and_working_model_package(uploaded_run, client, t
     preds = pd.read_csv(tmp_path / "out.csv")
     assert set(preds["prediction"]) <= {"no", "yes"}
 
-    assert client.get(f"/runs/{uploaded_run}/download/forecast").status_code == 409  # not a forecasting run
     assert client.get(f"/runs/{uploaded_run}/download/weights").status_code == 404
 
 
