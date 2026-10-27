@@ -49,22 +49,25 @@ modal app stop modelforge-train            # the old 8-CPU trainer, no longer us
 **Runs are background jobs.** `/runs/{id}/start` spawns `run_job` (in `backend_app.py`), which runs the
 whole pipeline in its own container with a 6-hour limit, independent of any HTTP request, so there is
 no request timeout to hit. The frontend polls `/status`; `/runs/{id}/cancel` stops the job and any GPU
-work it started. Locally (`uvicorn`), runs use in-process background tasks instead.
+work it started. Locally (`uvicorn`), runs use in-process background tasks instead. `run_job` asks for
+8 CPU cores and 8 GB: it reads the full table once and holds it through the audit, then works on at
+most 300,000 rows (a random sample of larger tables) for the rest of the run.
+
+**Deploy order when the model format changes** (for example `app/training/runtime.py` or the bundle the
+trainer writes): deploy `gpu_app.py` and `inference_app.py` first, then `backend_app.py`, so no model is
+built or served by an older runtime than the backend expects.
 
 **All model training runs on NVIDIA H200s** (`app/training/gpu_app.py`); there is no CPU or local
 training path, so runs fail until this service is deployed. Modal only allows GPU functions on
 accounts with a **payment method** on file (Settings → Billing), even when paid from free credits.
-H200 is billed per second at about $4.54/hr. The service has two images:
+H200 is billed per second at about $4.54/hr. The service has one function:
 
 | Function | Image | Runs |
 |----------|-------|------|
-| `train_classic` | cuML, XGBoost, CatBoost, Optuna, hdbscan | tabular model groups (boosted trees; SVM/KNN/linear) and clustering |
-| `train_deep` | PyTorch, timm, sentence-transformers, Chronos | one forecaster or one image CNN per call |
-| `embed_text` | same as `train_deep` | pretrained embeddings for free-text columns |
+| `train_classic` | cuML, XGBoost, CatBoost, Optuna | one model group per call: boosted trees, or SVM/KNN/linear |
 
-A run fans out across GPUs in parallel (2 containers for a table, up to 5 for forecasting, 3 for images).
+A run trains its two model groups in parallel, on 2 GPU containers.
 `MAX_PARALLEL_GPUS` in `gpu_app.py` caps concurrent H200s per function (default 3) to bound cost.
-Pretrained weights (text encoder, Chronos-2, three CNNs) are baked into the deep image at build time.
 
 The GPU and inference images pin identical library versions (`tests/test_training.py`
 enforces it); change them together and redeploy both.
@@ -83,13 +86,65 @@ Every run artifact is then mirrored to the bucket, runs missing from the Modal V
 restored from it, and the result page's downloads redirect to presigned URLs that expire
 after 15 minutes.
 
-R2 also enables **large uploads** (over 30 MB, up to 2 GB, e.g. image zips): the browser PUTs the file
+R2 also enables **large uploads** (over 30 MB, up to 2 GB): the browser PUTs the file
 straight to the bucket with a short-lived URL, skipping the frontend proxy and the backend. That needs
 one CORS rule on the bucket (R2 → bucket → Settings → CORS policy):
 ```json
 [{"AllowedOrigins": ["https://namtheg.khalid-ai.dev"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600}]
 ```
 Downloads need no CORS rule: they are plain browser navigations. Without R2, uploads are capped at 30 MB.
+
+### Sign-in by email (optional)
+Accounts are a name and an email, with no passwords: every sign-in and sign-up is confirmed with a
+6-digit code sent by email. A signed-in user gets "My runs", a list of the runs they upload or start.
+Run links keep working for anyone who has them, signed in or not. Until the steps below are done, the
+site shows no sign-in button.
+
+1. Generate a secret and add it to `Backend/.env`:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
+   ```ini
+   AUTH_SECRET=<the output>
+   ```
+   It signs the session cookies. Changing it later signs everyone out; accounts and their runs are kept.
+2. Choose an email sender. Any SMTP service works; two that cost nothing at this scale:
+   - **Resend** (recommended). The free plan sends 3,000 emails a month, at most 100 a day, from one
+     domain. At the cap, sending pauses until the next day; nothing is billed. Add a domain you own
+     (e.g. `khalid-ai.dev`) in Resend, add the DNS records it lists in Cloudflare, then create an
+     API key with sending access:
+     ```ini
+     SMTP_HOST=smtp.resend.com
+     SMTP_PORT=465
+     SMTP_USERNAME=resend
+     SMTP_PASSWORD=<the Resend API key>
+     SMTP_FROM=Namtheg <login@khalid-ai.dev>
+     ```
+   - **Gmail**, with no domain to set up. It needs 2-Step Verification on the account and an
+     [app password](https://myaccount.google.com/apppasswords):
+     ```ini
+     SMTP_HOST=smtp.gmail.com
+     SMTP_PORT=465
+     SMTP_USERNAME=you@gmail.com
+     SMTP_PASSWORD=<the 16-character app password>
+     SMTP_FROM=Namtheg <you@gmail.com>
+     ```
+3. Redeploy the backend: `.env` reaches Modal only at deploy time.
+   ```bash
+   modal deploy app/deploy/backend_app.py
+   ```
+   `GET /auth/me` then answers `"enabled": true`, and the sign-in button appears in the header.
+
+Every code is an email, so `AUTH_MAX_CODES_PER_DAY` (default 100, Resend's free daily cap) stops the
+site from sending more than that in a day. Each address is also limited to one code a minute and five
+an hour, and a code allows five tries and expires after 10 minutes.
+
+Accounts are stored next to the runs on the Modal Volume (`/storage/accounts`) and mirrored to R2
+when R2 is on. Each account record holds the name, the email and its list of runs. Codes are stored
+only as keyed hashes, and are never mirrored.
+
+For a local backend with no email set up, `AUTH_DEV_LOG_CODES=true` (with any `AUTH_SECRET`) writes
+each code to the server log instead of sending it. Never set it on Modal.
 
 Modal will output your permanent public URL, for example:
 ```

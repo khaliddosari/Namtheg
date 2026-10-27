@@ -3,17 +3,20 @@
 Browser checks for the dashboard, run against a mock of the backend API so they
 need no Modal, GPU or R2:
 
-- `suite.js`: 49 end-to-end flows (upload, configure, training, results,
-  export, deploy, predict, share page, routing, navigation, loading and error
-  states). Any console or page error fails a test, except the HTTP errors a
-  test provokes on purpose (the R2 fallback's 409, a missing plot's 404, a
-  failed predict's 502, an upload read that a proxy drops).
+- `suite.js`: 51 end-to-end flows (upload, configure, training, results,
+  export, deploy, predict, share page, sign-in and accounts, routing,
+  navigation, loading and error states). Any console or page error fails a
+  test, except the HTTP errors a test provokes on purpose (the R2 fallback's
+  409, a missing plot's 404, a failed predict's 502, a wrong sign-in code's
+  400, an upload read that a proxy drops).
 - `layout.js`: every stage at seven viewports, from 1920×1080 down to 360×740.
   It flags sideways page scroll, content escaping its stage or its control,
   text cut off without an ellipsis, and empty gaps under locked pages.
   Screenshots land in `shots/layout` for a look by eye.
 - `a11y.js`: axe-core WCAG 2.1 A/AA on each screen at desktop and phone width,
-  plus a keyboard walk that checks every focus stop shows a focus ring.
+  plus a keyboard walk that checks every focus stop shows a focus ring, then
+  on each dialog: the rationale, the analyst's findings, every sign-up step,
+  and the account.
 
 ## Setup, once
 
@@ -66,9 +69,6 @@ They also work for browsing by hand, for example
 | `reading` | A large upload still being read on the server |
 | `reg-done` | Regression with tuning, features, leaderboard, downloads |
 | `clf-done` | Classification with an overfit gap |
-| `clu-done` | Clustering, silhouette metric |
-| `fc-done` | Forecasting, MASE (lower is better) |
-| `img-done` | Image classification, no plot |
 | `bare-done` | A result with no extras and no plot |
 | `running`, `queued` | Frozen mid-run |
 | `failed`, `cancelled` | Stopped runs |
@@ -87,6 +87,13 @@ inside the request, which the frontend still handles (`dropped`: a plain 500
 after 27 seconds, the way a proxy that stopped waiting answers, with the run
 ready soon after; `reject`: a 400 with the reason), or `crash` (a plain 500 at
 once). See `complete()` in `mock_backend.py`.
+
+Accounts are on, as on a backend with email set up; `{"auth": false}` turns
+them off, the way a backend without email answers. No email is sent:
+`GET /__mock/last_code?email=...` returns the code that would have gone out,
+and `POST /__mock/account` with `{"email", "name", "runs": [run ids]}` makes
+an account that already lists runs, oldest first. `{"resend_seconds": 0}`
+lifts the minute an address waits between codes.
 
 ## Settings
 

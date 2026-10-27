@@ -8,13 +8,13 @@
 
 ## 1. Mission & Scope
 
-Namtheg is an agentic AutoML platform: upload a table or a zip of images, and it trains a
+Namtheg is an agentic AutoML platform: upload a table, and it trains a
 GPU-benchmarked model with an evidence-grounded explanation. See [PRD.md](PRD.md) §1 for the full
 flow and §2 (Out of Scope) for what not to build.
 
-**Forecasting is planned for removal** (PRD §1, §8). It is fully implemented and tested today, but
-treat it as short-lived: do not build new shared infrastructure that assumes it will stay, and do
-not invest effort improving it beyond keeping it working.
+**Classical supervised machine learning only** (PRD §1, §8). Clustering, forecasting, image
+classification and free-text embeddings were removed, along with every deep learning model. Do not
+bring back clustering, neural networks, pretrained models or time-series tasks without asking first.
 
 ---
 
@@ -24,8 +24,10 @@ Fully specified in [PRD.md](PRD.md) §0. Summary for quick reference, do not par
 read from the PRD and the actual source (`Backend/app/agent/analyst.py`,
 `Backend/app/agent/report.py`):
 
-- The analyst investigates a dataset with sandboxed code and submits a plan (problem type, columns
-  to drop with evidence, findings, open questions). It never trains a model itself.
+- The analyst investigates a dataset with sandboxed code and submits a plan: a data dictionary,
+  the problem type, columns to drop with evidence, cleaning (codes that mean missing, target label
+  merges, number codes as categories, date parts), findings, and open questions. Every decision is
+  checked against the data in code before the pipeline uses it. It never trains a model itself.
 - The report writer states results in plain language, citing only numbers the pipeline actually
   computed; an unverified claim is rewritten once, then replaced by a deterministic template.
 - Neither ever claims a model is production ready, and neither fabricates a metric.
@@ -38,12 +40,6 @@ Authoritative table in [PRD.md](PRD.md) §5.4. Read from there when changing tra
 
 - **Classification / Regression:** XGBoost (depth-wise and leaf-wise), CatBoost, SVM, KNN,
   logistic/ridge regression.
-- **Clustering:** K-Means, HDBSCAN, DBSCAN, Spectral.
-- **Forecasting (planned for removal):** Chronos-2, LSTM, GRU, TCN, XGBoost on lagged features.
-- **Image classification:** ConvNeXt-Tiny, EfficientNet-B0, ResNet-50.
-
-Agglomerative clustering and Gaussian mixtures are intentionally excluded: neither has a GPU
-implementation, and training never runs on CPU (§4 below).
 
 ---
 
@@ -64,7 +60,7 @@ These are non-negotiable. A change that violates one needs a PRD update first, n
 5. **No em dashes anywhere the platform writes text**, prompts, generated reports, docs, or code
    comments. Use a comma, colon, semicolon, or a plain hyphen instead.
 6. **Models are never stored as raw library pickles.** They travel as native formats (XGBoost JSON,
-   CatBoost's own format, a torch state dict) plus a small loader, so a saved model still loads on a
+   CatBoost's own format, plain numpy arrays) plus a small loader, so a saved model still loads on a
    different build or operating system.
 7. **A run must not depend on staying inside a single HTTP request.** It executes as its own
    background job (PRD §6) and must be cancellable.
@@ -79,7 +75,7 @@ first.
 
 - **Frontend:** Next.js, React, TypeScript.
 - **Backend:** Python, FastAPI, on Modal.
-- **Training:** Modal GPU service (NVIDIA H200 only), cuML, XGBoost, CatBoost, PyTorch, Optuna.
+- **Training:** Modal GPU service (NVIDIA H200 only), cuML, XGBoost, CatBoost, Optuna.
 - **LLM:** a direct client against the primary provider's API, with an automatic cheaper fallback.
   No LangChain or other agent-orchestration framework; the tool-calling loop is our own code.
 - **Storage:** a Modal Volume, optionally mirrored to Cloudflare R2.
@@ -100,8 +96,8 @@ first.
 ## 7. Working Agreements
 
 1. **Read [PRD.md](PRD.md) first**, especially §1, §5, §6, and §8, before proposing a change.
-2. **Stay in scope.** If a request implies something in PRD §8 (Out of Scope), or extends
-   forecasting rather than working around its planned removal, surface that and ask before proceeding.
+2. **Stay in scope.** If a request implies something in PRD §8 (Out of Scope), surface that and ask
+   before proceeding.
 3. **Do not silently resolve an open question in PRD §9.** Flag it and ask.
 4. **Update the PRD when reality diverges.** If an implementation choice changes a task, a model
    roster, a constraint, or the tech stack, edit [PRD.md](PRD.md) in the same change and note it in

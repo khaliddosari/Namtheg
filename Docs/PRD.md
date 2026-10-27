@@ -15,10 +15,16 @@ What follows reflects the real implementation, so it can serve as ground truth a
 
 The **analyst agent** (`Backend/app/agent/analyst.py`) is a senior data scientist that investigates
 a dataset before any model is trained. It writes and runs pandas code in an isolated sandbox, then
-submits a structured analysis: the problem type, columns that must not reach the model (with
-evidence), findings, and open questions it explicitly refuses to guess at. Hard constraints:
+submits a structured analysis: a data dictionary (what one row is, what the target and the key
+columns mean, how they relate), the problem type, columns that must not reach the model (with
+evidence), cleaning the data needs (codes that mean missing, target labels written several ways,
+number codes that are really categories, dates worth turning into calendar parts), findings, and
+open questions it explicitly refuses to guess at. Every decision is checked against the data in
+code; the cleaning is applied to training and to every prediction. Hard constraints:
 
-- Never infer a column's meaning from its name alone; check what the data actually shows.
+- Never present a column's meaning as fact when only its name suggests it: each data-dictionary
+  entry says whether it rests on the data, the name, or both.
+- Propose a cleaning step only with counts from the data showing it is needed.
 - Recommend dropping a column only with evidence of leakage, an identifier, or unavailability at
   prediction time. Weak correlation alone is never a reason.
 - Never fit a predictive model itself; that happens later, deterministically, on the GPU.
@@ -36,25 +42,25 @@ invents a metric.
 ## 1. Overview
 
 Namtheg is a web platform that automates model selection and training for a raw upload. A user
-uploads a table (CSV, TSV, Excel, Parquet, JSON) or a zip of images, and the system:
+uploads a table (CSV, TSV, Excel, Parquet, JSON), and the system:
 
-1. Converts the upload into a typed DataFrame (or a validated image manifest) once.
-2. Resolves and validates the task: classification, regression, clustering, forecasting, or image
-   classification, rejecting an invalid combination before any GPU time is spent.
+1. Converts the upload into a typed DataFrame once.
+2. Resolves and validates the task: classification or regression, rejecting an invalid
+   combination before any GPU time is spent.
 3. Runs deterministic data-quality checks: leakage suspects, duplicates, class imbalance, identifier
    and temporal columns.
-4. For tables, has an LLM analyst agent investigate the data in a sandboxed environment and submit a
-   validated plan.
+4. Has an LLM analyst agent investigate the data in a sandboxed environment and submit a validated
+   plan.
 5. Trains every relevant candidate model in parallel on GPUs, tunes the best one, and compares it
    against a feature-blind baseline.
 6. Writes a short, evidence-grounded explanation of the result.
 7. Offers the cleaned data, the trained model (in a portable, dependency-light format), and, once
    deployed, a live prediction API, all as downloads or endpoints.
 
-**Forecasting is planned for removal.** It works today (Chronos-2, LSTM, GRU, TCN, and a
-gradient-boosted lag model, scored by rolling backtest) but is considered out of scope for this
-platform's direction and is expected to be dropped in a future revision. Do not build new features
-on top of it, and treat any forecasting-specific code as short-lived.
+**Classical supervised machine learning only.** Every model is a classical machine-learning model
+that predicts a target column: boosted trees, SVMs, nearest neighbours, and linear models.
+Clustering, forecasting, image classification, and free-text embeddings were removed, along with
+every deep learning model (§8, §10).
 
 ---
 
@@ -98,8 +104,7 @@ around real results, is what Namtheg's grounding step exists to close.
 ## 5. Functional Requirements
 
 ### 5.1 Ingestion
-- Accepts CSV, TSV, TXT, Excel (`.xlsx`/`.xls`), Parquet, JSON, and JSONL for tables, and a `.zip`
-  with one folder per class for images.
+- Accepts tables as CSV, TSV, TXT, Excel (`.xlsx`/`.xls`), Parquet, JSON, or JSONL.
 - Every parsing decision (renamed columns, dropped empty rows, a mixed-type column stored as text)
   is recorded, never applied silently.
 - Files up to 30 MB go through the API directly; larger files (up to 2 GB) upload straight to
@@ -112,12 +117,9 @@ A run is exactly one of:
 |------|---------|-------------|
 | Classification | a categorical target column | cross-validated accuracy, or macro F1 if the classes are imbalanced |
 | Regression | a numeric target column | cross-validated R2 |
-| Clustering | no target column | silhouette score |
-| Forecasting (planned for removal, see §1) | a date column plus a numeric target | rolling-backtest MASE |
-| Image classification | a zip upload, one folder per class | validation accuracy, or macro F1 if imbalanced |
 
-An invalid combination (a target given for clustering, a non-numeric forecast target, an image zip
-with only one class) is rejected in the request, before the run is queued.
+An invalid combination (a missing target, a non-numeric regression target, a classification
+target with too many classes) is rejected in the request, before the run is queued.
 
 ### 5.3 Data Audit
 Before any model is trained: missing-target rows, class imbalance and rare classes, duplicate and
@@ -128,17 +130,19 @@ checked without training any model, so the audit itself never needs a GPU).
 ### 5.4 Training
 - Every model trains on a GPU. There is no CPU or local training path; if the GPU service cannot
   see a GPU, the run fails with that reason rather than falling back.
-- Candidates by task: XGBoost (two growth strategies), CatBoost, SVM, KNN, and logistic/ridge
-  regression for classification and regression; K-Means, HDBSCAN, DBSCAN, and Spectral clustering
-  for clustering; ConvNeXt, EfficientNet, and ResNet (pretrained, fine-tuned) for images.
-- Classical models that are not natively GPU code (SVM, KNN, linear models, clustering) run through
+- Tables over 300,000 rows train on one reproducible random sample of 300,000 rows (stratified by
+  the target's classes), drawn at the start of the run and shared with the analyst agent, so it
+  investigates exactly the rows the models learn from. Profiling and the audit still see every row,
+  and the full table is read only once per run.
+- Candidates: XGBoost (two growth strategies), CatBoost, SVM, KNN, and logistic/ridge regression,
+  for both classification and regression.
+- Classical models that are not natively GPU code (SVM, KNN, linear models) run through
   a GPU-accelerated scikit-learn compatibility layer; any call that silently falls back to CPU
   instead of the GPU is treated as a failure, not a degraded success.
-- Model groups and, for forecasting and images, individual candidates train in parallel on separate
-  GPU containers.
+- Model groups train in parallel on separate GPU containers.
 - Tuning uses a pruned search that abandons a clearly weak trial early and ends once several trials
-  in a row fail to beat the best by more than its cross-validation noise; boosted trees and neural
-  networks use early stopping instead of a fixed training length.
+  in a row fail to beat the best by more than its cross-validation noise; boosted trees use early
+  stopping instead of a fixed training length.
 - Class imbalance is handled before training (balanced weights per fold, macro-F1 selection), not
   by resampling, which can leak duplicate rows across a cross-validation split.
 - Every result is compared against a feature-blind baseline on the same split; a model that does not
@@ -146,9 +150,7 @@ checked without training any model, so the audit itself never needs a GPU).
 
 ### 5.5 Reporting
 The written summary states the winning model, its score against the baseline, and the single most
-relevant caveat, using only numbers verified against the run's own computed results (see §0). For
-clustering, it states the strength of the structure found without claiming the groups are a
-verified, correct segmentation, since there is no ground truth to check them against.
+relevant caveat, using only numbers verified against the run's own computed results (see §0).
 
 ### 5.6 Deployment and Downloads
 - A trained model can be deployed to a shared, always-on inference endpoint that serves predictions
@@ -156,6 +158,17 @@ verified, correct segmentation, since there is no ground truth to check them aga
 - Every run offers the cleaned data (CSV) and a model package: the model in a portable format (never
   a raw library pickle, since those can fail to load on a different build or operating system), a
   loader, a working prediction script, and a dependency list scoped to only what that model needs.
+
+### 5.7 Accounts (optional)
+- Signing in is optional: every feature works without an account.
+- An account is a name and an email address, with no password. Every sign-up and every sign-in is
+  confirmed with a one-time 6-digit code sent to that address.
+- A signed-in user sees "My runs": the runs they uploaded or started while signed in, plus the run
+  that was open when they signed in, newest first, each opening where it got to.
+- Asking for a code never reveals whether an address has an account. Codes expire after 10 minutes
+  and allow 5 tries. Each address gets at most one code a minute and five an hour, and a daily cap
+  protects the email sender's quota.
+- The feature stays hidden until the server can send email.
 
 ---
 
@@ -168,7 +181,7 @@ verified, correct segmentation, since there is no ground truth to check them aga
 | **Durability** | With object storage configured, every run artifact is mirrored off the compute node and restored automatically if the local copy is lost. |
 | **Isolation** | The analyst agent's code runs in a sandbox with no network access, no credentials, and only that run's own data, so it cannot reach anything else even if it tried. |
 | **No CPU fallback** | Training and its GPU-accelerated preprocessing never silently run on CPU; see §5.4. |
-| **Reasonable defaults over guessing** | The pipeline refuses to guess in cases where the answer is a business decision (duplicate timestamps in a forecast series, an ambiguous aggregation), and asks instead of assuming. |
+| **Reasonable defaults over guessing** | The pipeline refuses to guess in cases where the answer is a business decision (an ambiguous aggregation, for example), and asks instead of assuming. |
 
 ---
 
@@ -178,20 +191,23 @@ verified, correct segmentation, since there is no ground truth to check them aga
 - **Backend:** Python, FastAPI, deployed on Modal as a serverless ASGI app; runs execute as
   detached Modal jobs, not inside the request.
 - **Training:** a dedicated Modal GPU service (NVIDIA H200), using cuML for GPU-accelerated
-  scikit-learn-compatible models, XGBoost and CatBoost for boosted trees, PyTorch for the neural
-  forecasters and fine-tuned image models, and Optuna for tuning.
+  scikit-learn-compatible models, XGBoost and CatBoost for boosted trees, and Optuna for tuning.
 - **LLM:** a primary model (currently GPT-6 Sol) called directly on OpenAI's Responses API, with an
   automatic fallback to a cheaper model (currently DeepSeek V4 Flash) via OpenRouter if the primary
   fails. A run that falls back stays on the fallback for the rest of that run.
 - **Sandbox:** a Modal Sandbox (gVisor isolation) for the analyst agent's code.
 - **Storage:** a Modal Volume for run artifacts, optionally mirrored to Cloudflare R2 for
   durability, large-file uploads, and expiring download links.
+- **Email:** any SMTP service (Resend recommended) for sign-in codes, only when accounts are on.
 
 ---
 
 ## 8. Out of Scope
 
-- Forecasting is implemented today but is planned for removal (§1); do not extend it.
+- Deep learning of any kind: neural networks, pretrained or fine-tuned models, and text
+  embeddings, and with them image classification.
+- Forecasting and other time-series tasks.
+- Clustering and other unsupervised tasks: every run predicts a target column.
 - Reinforcement learning: not a fit for this platform's data shapes.
 - Custom user-supplied model code or architectures.
 - Multi-user real-time collaboration on a single run.
@@ -205,8 +221,10 @@ verified, correct segmentation, since there is no ground truth to check them aga
   is no PII redaction yet, so sensitive columns should not be uploaded until that exists.
 - Grounding checks that a written number was actually computed, not that it is attached to the
   correct claim.
-- Tables use a random train/test split; a date column in a table is dropped rather than turned into
-  a feature until a time-aware split exists.
+- Tables use a random train/test split. A date column becomes features only when the analyst turns
+  it into date parts (otherwise it is dropped), and even then the split stays random: there is no
+  time-aware split yet.
+- Accounts don't restrict access: a run's link opens it for anyone who has it, signed in or not.
 - The classification decision threshold is fixed at 0.5; imbalanced runs get balanced class
   weights, but the threshold itself is not tuned for a target precision or recall.
 
@@ -220,6 +238,16 @@ verified, correct segmentation, since there is no ground truth to check them aga
 - LangChain was removed; the analyst agent and report writer are now driven by a direct LLM client.
 - Training moved from CPU (scikit-learn) to GPU-only (cuML, XGBoost, CatBoost, PyTorch), and expanded
   from two tasks to five: classification, regression, clustering, forecasting, and image
-  classification. Forecasting is now planned for removal in turn (§1, §8).
+  classification.
 - Runs moved from executing inside the request to detached, cancellable background jobs, removing
   the request-timeout ceiling entirely.
+- Forecasting, image classification, and free-text embeddings were removed, and with them every deep
+  learning model and library (PyTorch, timm, sentence-transformers, Chronos).
+- Clustering was removed (K-Means, HDBSCAN, DBSCAN, Spectral). Every run now predicts a target
+  column with classical machine-learning models: classification or regression.
+- The analyst agent now builds a data dictionary and proposes cleaning (missing-value codes, target
+  label merges, number codes as categories, date parts), each checked in code and applied to both
+  training and predictions. Tables over 300,000 rows train on a 300,000-row random sample shared with
+  the analyst, and each run reads the full table once instead of once per stage.
+- Optional accounts were added: sign-up and sign-in with a code sent by email (no passwords), and a
+  list of each account's runs.

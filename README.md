@@ -21,6 +21,7 @@ This repository is structured as a modern monorepo separating frontend UI from b
 │   │   ├── deploy/          # Modal serverless deployment logic
 │   │   ├── llm.py           # Primary/fallback LLM client
 │   │   ├── storage.py       # Run storage (Modal Volume in production)
+│   │   ├── accounts.py      # Optional sign-in by emailed code; each account's runs
 │   │   └── main.py          # FastAPI application routes
 │   ├── requirements.txt     # Backend Python dependencies
 │   └── .env.example         # Example local backend environment variables
@@ -47,16 +48,15 @@ This repository is structured as a modern monorepo separating frontend UI from b
 
 ## 🧠 AutoML Pipeline Flow
 
-Upload a table (CSV, Excel, Parquet, JSON) or a `.zip` of images, then choose what to learn:
+Upload a table (CSV, Excel, Parquet, JSON), then pick the column to predict:
 
 | Task | Models (all trained on NVIDIA H200 GPUs, in parallel) |
 |------|--------------------------------------------------------|
 | **Predict a column** (classification / regression) | XGBoost, CatBoost, SVM, KNN, logistic / ridge regression |
-| **Find groups** (clustering, no target) | K-Means, HDBSCAN, DBSCAN, Spectral |
-| **Forecast over time** (planned for removal, see [Docs/PRD.md](Docs/PRD.md) §1) | Chronos-2 (pretrained), LSTM and GRU (RNNs), TCN (1-D CNN), XGBoost on lags |
-| **Image classification** | ConvNeXt, EfficientNet, ResNet (pretrained, fine-tuned) |
 
-Every run: the upload becomes a typed DataFrame once; deterministic checks (leakage, duplicates, imbalance, time-series gaps) run first; for tables an analyst agent (GPT-6 Sol) investigates with code in an isolated sandbox; imbalance is handled before modelling; models train as a background job on GPUs with early stopping and pruned Optuna search, next to a naive baseline; free-text columns are embedded with a pretrained multilingual encoder; and the written summary may only cite numbers the pipeline computed. Downloads: the cleaned data (CSV), the model package (weights, `predict.py`), and forecasts.
+Every run: the upload becomes a typed DataFrame once; deterministic checks (leakage, duplicates, imbalance) run first; an analyst agent (GPT-6 Sol) investigates with code in an isolated sandbox; imbalance is handled before modelling; models train as a background job on GPUs with early stopping and pruned Optuna search, next to a naive baseline; and the written summary may only cite numbers the pipeline computed. Downloads: the cleaned data (CSV) and the model package (weights, `predict.py`). Classical supervised machine learning only: no clustering, neural networks, pretrained models, forecasting or image tasks.
+
+Signing in is optional: a name and an email, with a code by email at every sign-in instead of a password. It gives you a list of your runs. It appears once the backend can send email ([Docs/DEPLOYMENT.md](Docs/DEPLOYMENT.md#sign-in-by-email-optional)).
 
 ---
 
