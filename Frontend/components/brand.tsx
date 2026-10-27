@@ -2,15 +2,13 @@ import React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * The product wordmark — نَمذِج (Arabic for "model"). Always rendered in
- * IBM Plex Sans Arabic bold so it stays visually consistent everywhere it
- * appears across the UI.
+ * The product wordmark: نَمذِج (Arabic for "model"), set in Thmanyah Serif
+ * Display Black via font-brand. The ornate OpenType features go in a style
+ * rather than the font-ornate class, because cn() reads font-ornate as a font
+ * family and would drop it next to font-brand.
  */
-/** OpenType feature set that lights up the Thmanyah serif ligatures/stylistic sets. */
-const THMANYAH_FEATURES: React.CSSProperties = {
-  fontFeatureSettings:
-    '"liga" 1, "dlig" 1, "clig" 1, "calt" 1, "salt" 1, "ss01" 1, "ss02" 1, "ss03" 1, "ss04" 1, "ss05" 1',
-  textRendering: "optimizeLegibility",
+const BRAND_FEATURES: React.CSSProperties = {
+  fontFeatureSettings: '"ss01", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08", "salt", "swsh", "dlig"',
 };
 
 export function Brand({ className }: { className?: string }) {
@@ -18,43 +16,45 @@ export function Brand({ className }: { className?: string }) {
     <span
       lang="ar"
       dir="rtl"
-      style={THMANYAH_FEATURES}
-      className={cn("font-display font-bold inline-flex items-center text-primary text-[1.22em] leading-none", className)}
+      style={BRAND_FEATURES}
+      className={cn("inline-flex items-center font-brand text-[1.22em] leading-none font-black text-primary", className)}
     >
       نَمذِج
     </span>
   );
 }
 
+/** Three joined nodes: the brand mark, drawn in theme colours so it follows the hue. */
+export function BrandMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={cn("size-5", className)} fill="none">
+      <g className="stroke-primary" strokeWidth="2" strokeLinecap="round">
+        <line x1="12" y1="6" x2="6" y2="18" />
+        <line x1="12" y1="6" x2="18" y2="18" />
+        <line x1="6" y1="18" x2="18" y2="18" />
+      </g>
+      <g className="fill-primary">
+        <circle cx="12" cy="6" r="2.6" />
+        <circle cx="6" cy="18" r="2.6" />
+        <circle cx="18" cy="18" r="2.6" />
+      </g>
+    </svg>
+  );
+}
+
 /**
- * Formats any occurrence of "نَمذِج" in a string by wrapping it in a styled Brand span
- * so it stands out, is highly readable, and uses the correct Arabic bold font.
+ * Wraps any occurrence of "نَمذِج" in a string (the LLM writes it into
+ * justifications) in the wordmark style so it reads as the product name.
  */
 export function formatArabicBrand(text: string): React.ReactNode {
   if (!text) return "";
-  
-  // Matches "نَمذِج" and common diacritic variants
   const regex = /(ن[َْ]?م[َْ]?ذ[ِْ]?ج)/g;
   const parts = text.split(regex);
-  
   return (
     <>
-      {parts.map((part, index) => {
-        if (regex.test(part)) {
-          return (
-            <span
-              key={index}
-              lang="ar"
-              dir="rtl"
-              style={THMANYAH_FEATURES}
-              className="font-display font-bold text-[1.22em] inline-flex items-center mx-0.5 text-primary leading-none"
-            >
-              نَمذِج
-            </span>
-          );
-        }
-        return part;
-      })}
+      {parts.map((part, index) =>
+        index % 2 === 1 ? <Brand key={index} className="mx-0.5 text-[1.1em]" /> : part
+      )}
     </>
   );
 }

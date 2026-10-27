@@ -1,110 +1,88 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { motion } from "framer-motion";
-import {
-  getDeployment,
-  getModelSchema,
-  type Deployment,
-  type ModelSchema,
-} from "@/lib/api";
-import { TryModelCard } from "@/components/try-model-card";
-import { Brand } from "@/components/brand";
-import { SiteFooter } from "@/components/site-footer";
-import { Icon } from "@/components/icon";
+import { ArrowUpRight, FlaskConical } from "lucide-react";
+import { getDeployment, getModelSchema, type Deployment, type ModelSchema } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { buttonVariants } from "@/components/ui/button";
+import { SiteHeader } from "@/components/site-header";
+import { Panel, PanelEmpty, PanelError, PanelSkeleton } from "@/components/panel";
+import { TryModel } from "@/components/try-model";
 
+/**
+ * The public test page a deployed model is shared through (QR code and link
+ * on the Deploy stage). No account and no dashboard: one form and its answer.
+ */
 export default function PublicSharePage() {
   const { runId } = useParams<{ runId: string }>();
-
   const [schema, setSchema] = useState<ModelSchema | null>(null);
   const [deployment, setDeployment] = useState<Deployment | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoadError(null);
+    setSchema(null);
+    setDeployment(null);
     getModelSchema(runId)
       .then(setSchema)
       .catch((e) => setLoadError(e instanceof Error ? e.message : String(e)));
     getDeployment(runId)
       .then(setDeployment)
-      .catch(() => {
-        /* deployment may not exist - we show a friendly error below */
-      });
+      // No deployment record yet reads as not live, which the card explains.
+      .catch(() => setDeployment({ run_id: runId, status: "not_deployed" }));
   }, [runId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const deployed = deployment?.status === "succeeded" && !!deployment.predict_url;
 
   return (
-    <div className="min-h-dvh select-none flex flex-col">
-      {/* Top bar */}
-      <header className="w-full px-6 md:px-10 py-5 flex items-center justify-center border-b border-outline-variant glass-strong relative">
-        <Link href="/" className="flex items-center gap-2 group">
-          <div className="w-8 h-8 rounded-lg bg-surface-purple-tint flex items-center justify-center shrink-0">
-            <Icon name="graph_3" className="text-primary" style={{ fontSize: "18px" }} />
-          </div>
-          <div className="leading-tight">
-            <p className="text-xl text-on-background group-hover:text-primary transition-colors"><Brand /></p>
-          </div>
-        </Link>
-        <Link
-          href="/"
-          className="absolute right-6 md:right-10 text-xs font-bold text-primary hover:underline hidden sm:flex items-center gap-1"
-        >
-          Build your own
-          <Icon name="arrow_outward" style={{ fontSize: "13px" }} />
-        </Link>
-      </header>
+    <div className="flex min-h-dvh flex-col">
+      <SiteHeader
+        start={
+          <Link href="/" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 lg:h-8")}>
+            <span className="sm:hidden">Build</span>
+            <span className="hidden sm:inline">Build your own</span>
+            <ArrowUpRight data-icon="inline-end" />
+          </Link>
+        }
+      />
 
-      {/* Main content */}
-      <main className="flex-1 flex flex-col items-center px-6 py-10 md:py-14">
-        <div className="w-full max-w-3xl">
-          {/* Hero */}
-          <motion.div
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-center mb-8"
-          >
-            <p className="text-[10px] font-black uppercase tracking-widest text-primary bg-surface-purple-tint inline-block px-2.5 py-1 rounded-full">
-              Try this AI model
-            </p>
-            <h1 className="text-4xl md:text-5xl font-black text-on-background mt-4 leading-tight">
-              {schema ? (
-                <>Predict <span className="text-primary">{humanize(schema.feature_cols.length, schema.problem_type)}</span></>
-              ) : (
-                "Loading model..."
-              )}
-            </h1>
-            <p className="text-sm md:text-base text-on-surface-variant mt-3 max-w-xl mx-auto">
-              {schema ? (
-                <>
-                  Powered by a <strong className="text-on-background">{schema.model_name ?? "machine learning"}</strong> model
-                  {" "}trained on this dataset. Fill in the values, click Predict, and the model responds live.
-                </>
-              ) : (
-                "Fetching the model schema..."
-              )}
-            </p>
-          </motion.div>
+      <main className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 lg:py-12">
+        <header className="mb-6 text-center">
+          <p className="text-xs font-medium text-primary">Try this AI model</p>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">
+            {schema ? `Predict ${humanize(schema.feature_cols.length, schema.problem_type)}` : loadError ? "Model unavailable" : "Loading the model..."}
+          </h1>
+          <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+            {schema ? (
+              <>
+                A <strong className="font-medium text-foreground">{schema.model_name ?? "machine learning"}</strong> model trained on
+                this dataset. Fill in the values, press Predict, and it answers live.
+              </>
+            ) : loadError ? (
+              "The link may be old, or the model was removed."
+            ) : (
+              "Fetching the model details."
+            )}
+          </p>
+        </header>
 
-          {/* Error states */}
-          {loadError && (
-            <div className="bg-error-container border border-error/30 rounded-xl p-5 text-center">
-              <Icon name="error" className="text-error" style={{ fontSize: "32px" }} />
-              <h3 className="text-sm font-bold text-on-background mt-2">Model unavailable</h3>
-              <p className="text-xs text-on-surface-variant mt-1 font-mono break-words">{loadError}</p>
-            </div>
+        <Panel title="Try the model" caption="Pre-filled with a sample row">
+          {loadError ? (
+            <PanelError title="This model isn't available" message={loadError} onRetry={load} />
+          ) : !schema || !deployment ? (
+            <PanelSkeleton rows={6} />
+          ) : !deployed ? (
+            <PanelEmpty icon={<FlaskConical />} title="Not live right now" description="This model is not deployed at the moment. Check back shortly." />
+          ) : (
+            <TryModel runId={runId} schema={schema} variant="simple" layout="stack" />
           )}
-
-          {/* The form */}
-          {!loadError && (
-            <TryModelCard runId={runId} schema={schema} deployed={deployed} variant="simple" />
-          )}
-        </div>
-
-        <div className="md:hidden mt-10">
-          <SiteFooter />
-        </div>
+        </Panel>
       </main>
     </div>
   );

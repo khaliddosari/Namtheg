@@ -1,323 +1,741 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-/* ============================================================================
-   LIQUID GLASS — material layer for Namtheg
-   Dark, frosted "liquid glass" surfaces floating over an ambient cyan/blue/violet
-   glow. Tokens mirror the Khalid Al Dosari portfolio design system.
-   ========================================================================== */
+/* The e2e scripts are not UI; keep their strings out of the class scan. */
+@source not "../e2e";
 
-/* Thmanyah Serif Display — signature display serif (Arabic name + brand moments) */
-@font-face {
-  font-family: "Thmanyah Serif Display";
-  src: url("/fonts/thmanyahserifdisplay-Light.otf") format("opentype");
-  font-weight: 300; font-style: normal; font-display: swap;
-}
-@font-face {
-  font-family: "Thmanyah Serif Display";
-  src: url("/fonts/thmanyahserifdisplay-Regular.otf") format("opentype");
-  font-weight: 400; font-style: normal; font-display: swap;
-}
-@font-face {
-  font-family: "Thmanyah Serif Display";
-  src: url("/fonts/thmanyahserifdisplay-Medium.otf") format("opentype");
-  font-weight: 500; font-style: normal; font-display: swap;
-}
-@font-face {
-  font-family: "Thmanyah Serif Display";
-  src: url("/fonts/thmanyahserifdisplay-Bold.otf") format("opentype");
-  font-weight: 700; font-style: normal; font-display: swap;
-}
-@font-face {
-  font-family: "Thmanyah Serif Display";
-  src: url("/fonts/thmanyahserifdisplay-Black.otf") format("opentype");
-  font-weight: 900; font-style: normal; font-display: swap;
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: var(--font-sans);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 :root {
-  /* Core */
-  --bg-primary: #0a0a0f;
-  --bg-secondary: #111118;
-  --text-primary: #e8e8ed;
-  --text-secondary: #9999a8;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
 
-  /* Accent (cyan → blue) */
-  --accent: #4fc3f7;
-  --accent-dark: #0288d1;
-  --accent-gradient: linear-gradient(135deg, #4fc3f7, #0288d1);
-  --border: rgba(255, 255, 255, 0.08);
-
-  /* Ambient glow hues — the light the glass refracts */
-  --glow-cyan: rgba(79, 195, 247, 0.18);
-  --glow-blue: rgba(2, 136, 209, 0.15);
-  --glow-violet: rgba(126, 87, 194, 0.14);
-
-  /* Liquid-glass material */
-  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
-  --glass-bg-hover: linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
-  --glass-blur: blur(24px) saturate(180%);
-  --glass-blur-strong: blur(32px) saturate(200%);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.12);
-  --glass-highlight:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.18),
-    inset 0 -1px 0 0 rgba(0, 0, 0, 0.25),
-    inset 1px 0 0 0 rgba(255, 255, 255, 0.06),
-    inset -1px 0 0 0 rgba(0, 0, 0, 0.1);
-  --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
-  --glass-shadow-hover: 0 18px 55px rgba(0, 0, 0, 0.45), 0 0 40px rgba(79, 195, 247, 0.1);
-
-  /* Shape & motion */
-  --radius: 16px;
-  --radius-sm: 8px;
-  --radius-pill: 20px;
-  --ease-glass: cubic-bezier(0.16, 1, 0.3, 1);
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
-
+  * {
+    @apply border-border outline-ring/50;
+    }
   body {
-    @apply bg-surface text-on-surface antialiased;
-    font-family: "Inter", "IBM Plex Sans", sans-serif;
-    min-height: 100dvh;
+    @apply bg-background text-foreground;
+    }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+/* ---------------------------------------------------------------------------
+   Navy glass theme.
+
+   Paste this whole file at the END of src/index.css, after whatever the shadcn
+   CLI generated. It overrides the generated palette rather than editing it, so
+   re-running the CLI to add a component never silently reverts the design.
+
+   Your stylesheet (src/index.css, or app/globals.css in Next) begins with the
+   usual imports: tailwindcss, and in a shadcn project tw-animate-css and, in
+   newer ones, shadcn/tailwind.css. This file depends only on the first. They
+   are named rather than written out, for the reason in the warning below.
+
+   Everything here is Tailwind v4 syntax (theme, custom-variant, utility
+   at-rules). This file stands on its own: the colour mapping below means it
+   works in a plain Vite or Next project with no shadcn CLI involved.
+
+   A fresh `shadcn init` also pulls in a font package (Geist, Inter...) and
+   points --font-sans at it. The font-sans line below wins regardless, but
+   delete that font line and uninstall the package, or every visitor still
+   downloads a face nothing uses.
+
+   It also covers the popups the CLI generates: dialog, sheet and drawer
+   scrims, and the surfaces of menus, popovers and dialogs. Those rules are
+   keyed on data-slot, which is identical in the Base UI styles (base-nova)
+   and the Radix ones (radix-nova, new-york), so they restyle old projects
+   too. See "Popups and overlays" further down.
+
+   Standalone HTML page instead of a project? Load @tailwindcss/browser@4 and
+   put this file inside <style type="text/tailwindcss">. Nothing else: the
+   browser build supplies the framework itself, and adding an import line for
+   it only makes the page fetch a file that is not there.
+
+   WARNING, and it fails silently: never let the import at-rule text appear
+   anywhere inside that style block, not even in a comment. The browser build
+   scans for it, decides the sheet manages its own imports, and emits zero
+   utilities with nothing in the console. The page still shows the fonts and
+   the wash, so it looks like the theme loaded and only the layout broke.
+   Measured three ways: without the line, utilities work and the console is
+   clean; with it, they work with one failed fetch; with those two words in a
+   comment, every utility disappears.
+--------------------------------------------------------------------------- */
+
+/* --- Type ----------------------------------------------------------------
+   Thmanyah Sans carries Arabic and Latin in one family, which is why it can be
+   the whole UI font in both languages instead of pairing two faces that never
+   quite agree on weight. Only the weights a page uses are fetched.
+   Serif Display, Black only, sets the wordmark and nothing else.
+-------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Thmanyah Sans";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahsans/woff2/thmanyahsans-Light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Thmanyah Sans";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahsans/woff2/thmanyahsans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Thmanyah Sans";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahsans/woff2/thmanyahsans-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Thmanyah Sans";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahsans/woff2/thmanyahsans-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Thmanyah Sans";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahsans/woff2/thmanyahsans-Black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Thmanyah Serif Display";
+  src: url("https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/thmanyahserifdisplay/woff2/thmanyahserifdisplay-Black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* One step up from Tailwind's 12/14/16px, because these interfaces are read at
+   arm's length on a wall screen as often as on a laptop. Line heights are
+   ratios, so they scale with the sizes. */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.0625rem;
+}
+
+/* dark: utilities fire only under a .dark class, never from the system
+   setting. The shadcn CLI writes the same line into a project; repeating it
+   here is harmless, and it is what keeps the dark: classes on copied shadcn
+   markup from switching on by themselves in a standalone page. */
+@custom-variant dark (&:is(.dark *));
+
+/* --- Console breakpoints --------------------------------------------------
+   Width alone is the wrong test for a viewport-locked layout: a wide but short
+   window, which is what a laptop with a browser toolbar actually is, cannot
+   hold two rows of panels. So these test height as well. Unused variants cost
+   nothing, since Tailwind only emits the utilities a page actually uses.
+   How to build against them is in references/layout.md.
+-------------------------------------------------------------------------- */
+@custom-variant desk {
+  @media (min-width: 80rem) and (min-height: 40rem) {
+    @slot;
+  }
+}
+/* the console on a short laptop window, where secondary text gives up space first */
+@custom-variant desk-short {
+  @media (min-width: 80rem) and (min-height: 40rem) and (max-height: 52rem) {
+    @slot;
+  }
+}
+/* around 720px tall, the shortest supported window, where two-line clamps go to one */
+@custom-variant desk-tight {
+  @media (min-width: 80rem) and (min-height: 40rem) and (max-height: 47rem) {
+    @slot;
+  }
+}
+
+@theme inline {
+  /* Maps the :root tokens below onto Tailwind's colour utilities, so bg-card,
+     text-muted-foreground and border-border exist. The shadcn CLI emits an
+     identical block; duplicating it is harmless and is what lets this file work
+     in a project that never ran the CLI. */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: "Thmanyah Sans", system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-brand: "Thmanyah Serif Display", "Thmanyah Sans", serif;
+  /* Mono stays for ids, codes and clocks. Thmanyah sits before the generic
+     fallback so Arabic inside a mono label falls through to it glyph by glyph
+     rather than to a system face that does not match. */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Thmanyah Sans", monospace;
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* --- Palette -------------------------------------------------------------
+   Light navy. Hue 250-264 throughout, so every surface, border and shadow is a
+   cool blue rather than a neutral grey with a blue accent dropped on top.
+   To move the whole design to another hue, change the hue angle in these
+   values and in the wash below; keep the lightness and chroma.
+-------------------------------------------------------------------------- */
+:root {
+  /* A light design: native controls, scrollbars and autofill stay light even
+     on a machine set to dark mode. */
+  color-scheme: light;
+
+  --background: oklch(0.975 0.01 250);
+  --foreground: oklch(0.16 0.045 258);
+
+  /* Surfaces are translucent on purpose: that is what makes them glass. */
+  --card: oklch(1 0 0 / 0.66);
+  --card-foreground: oklch(0.16 0.045 258);
+  --popover: oklch(0.99 0.005 250 / 0.9);
+  --popover-foreground: oklch(0.16 0.045 258);
+
+  --primary: oklch(0.3 0.105 262);
+  --primary-foreground: oklch(0.98 0.008 250);
+
+  --secondary: oklch(0.92 0.03 252 / 0.9);
+  --secondary-foreground: oklch(0.25 0.09 262);
+
+  --muted: oklch(0.94 0.018 250 / 0.7);
+  --muted-foreground: oklch(0.36 0.045 258);
+
+  --accent: oklch(0.91 0.04 252 / 0.85);
+  --accent-foreground: oklch(0.24 0.09 262);
+
+  --destructive: oklch(0.5 0.2 25);
+
+  --border: oklch(0.5 0.06 258 / 0.26);
+  --input: oklch(0.5 0.06 258 / 0.38);
+  --ring: oklch(0.45 0.1 260);
+
+  --radius: 0.9rem;
+
+  /* The glass recipe, reused by every panel and the header. A bright top edge
+     plus a soft navy drop shadow is what reads as a pane of glass lifted off
+     the background. */
+  --glass-edge: oklch(1 0 0 / 0.7);
+  --glass-shadow: 0 1px 2px oklch(0.28 0.09 262 / 0.06), 0 12px 36px -14px oklch(0.28 0.09 262 / 0.3);
+
+  /* Popups float higher than panels, so their shadow is deeper, and they sit
+     over content rather than the wash, so their edge is a navy hairline
+     rather than the white glass edge, which would vanish against a card. */
+  --popup-shadow: 0 0 0 1px oklch(0.5 0.06 258 / 0.18), 0 2px 6px oklch(0.28 0.09 262 / 0.08), 0 20px 48px -12px oklch(0.28 0.09 262 / 0.34);
+  --scrim: oklch(0.2 0.06 262 / 0.3);
+
+  /* Charts. The five hues are the wash's own (234-276), stepped in lightness
+     so neighbouring series separate even in greyscale, which is why they do
+     not read as a second accent. Status meaning in a chart (failures, over
+     SLA) uses the status colours, not these. */
+  --chart-1: oklch(0.42 0.14 262);
+  --chart-2: oklch(0.7 0.12 234);
+  --chart-3: oklch(0.55 0.15 276);
+  --chart-4: oklch(0.8 0.07 250);
+  --chart-5: oklch(0.3 0.08 258);
+
+  /* The sidebar is a container of other surfaces, so it is weaker glass than
+     a card (see "glass inside glass" in references/theme.md). Everything
+     else follows the main tokens, so a hue change carries over. */
+  --sidebar: oklch(1 0 0 / 0.5);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/* --- The wash ------------------------------------------------------------
+   Translucent panels only read as glass if there is something behind them
+   worth blurring. This fixed layer sits behind everything and gives the blur
+   something to do. Four soft radial pools, off-centre and different sizes, so
+   no panel sits on a flat field.
+-------------------------------------------------------------------------- */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(50rem 34rem at 6% -10%, oklch(0.62 0.14 258 / 0.5), transparent 60%),
+    radial-gradient(44rem 32rem at 100% 4%, oklch(0.7 0.11 232 / 0.42), transparent 62%),
+    radial-gradient(46rem 40rem at 88% 96%, oklch(0.42 0.13 264 / 0.3), transparent 62%),
+    radial-gradient(38rem 34rem at 22% 88%, oklch(0.66 0.12 272 / 0.26), transparent 64%);
+}
+
+/* --- Popups and overlays -------------------------------------------------
+   Stock shadcn dims the page with black at 10% and gives popups a black
+   shadow. Here the scrim is navy, and every popup surface gets a blur (the
+   popover token is translucent, so without one, text behind shows through
+   sharp) plus the deeper navy popup shadow.
+
+   Unlayered on purpose, like the Arabic tracking rule below: a rule inside a
+   layer loses to the generated utilities no matter how specific it is. To
+   change one instance anyway, use Tailwind's important modifier on it, for
+   example className="shadow-none!".
+
+   Toasts keep their own box-shadow, because theirs carries the keyboard
+   focus ring. Tooltips are left alone: they are solid dark navy by design.
+-------------------------------------------------------------------------- */
+:is(
+  [data-slot="dialog-overlay"],
+  [data-slot="alert-dialog-overlay"],
+  [data-slot="sheet-overlay"],
+  [data-slot="drawer-overlay"]
+) {
+  background-color: var(--scrim);
+}
+
+:is(
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="sheet-content"],
+  [data-slot="drawer-content"],
+  [data-slot="popover-content"],
+  [data-slot="hover-card-content"],
+  [data-slot="navigation-menu-content"],
+  [data-slot="navigation-menu-viewport"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="context-menu-content"],
+  [data-slot="context-menu-sub-content"],
+  [data-slot="menubar-content"],
+  [data-slot="menubar-sub-content"],
+  [data-slot="select-content"],
+  [data-slot="combobox-content"],
+  [data-slot="sidebar"][data-mobile="true"],
+  [data-slot="toast"],
+  [data-sonner-toast]
+) {
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+}
+
+:is(
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="sheet-content"],
+  [data-slot="drawer-content"],
+  [data-slot="popover-content"],
+  [data-slot="hover-card-content"],
+  [data-slot="navigation-menu-content"],
+  [data-slot="navigation-menu-viewport"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="context-menu-content"],
+  [data-slot="context-menu-sub-content"],
+  [data-slot="menubar-content"],
+  [data-slot="menubar-sub-content"],
+  [data-slot="select-content"],
+  [data-slot="combobox-content"],
+  [data-slot="sidebar"][data-mobile="true"]
+) {
+  box-shadow: var(--popup-shadow);
+}
+
+/* Stock Card is the panel, so it gets the full glass recipe here rather than
+   by editing card.tsx: blur, the white glass edge and the navy float shadow.
+   The sidebar rail is glass over the wash in the same way. */
+[data-slot="card"] {
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: 0 0 0 1px var(--glass-edge), var(--glass-shadow);
+}
+
+[data-slot="sidebar-inner"] {
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+}
+
+/* On a phone the sidebar opens as a sheet over content, not over the wash, so
+   it takes the popup surface rather than the rail's weaker glass. */
+[data-slot="sidebar"][data-mobile="true"] {
+  --sidebar: var(--popover);
+}
+
+/* SidebarInset, the main column beside a sidebar, ships an opaque
+   bg-background in every variant, which would hide the wash behind the whole
+   page. It is a layout container, not a surface: the panels inside it carry
+   the glass. */
+[data-slot="sidebar-inset"] {
+  background-color: transparent;
+}
+
+/* Glass depends on translucency. Where the viewer asked for less of it, or the
+   browser cannot blur, fall back to an opaque surface rather than an
+   unreadable one. Do not drop these: without them the design fails open onto
+   text sitting directly on a gradient. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --card: oklch(1 0 0 / 0.95);
+    --popover: oklch(0.99 0.005 250 / 0.98);
+    --sidebar: oklch(0.99 0.005 250 / 0.95);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --card: oklch(1 0 0 / 0.97);
+    --popover: oklch(0.99 0.005 250 / 0.99);
+    --sidebar: oklch(0.99 0.005 250 / 0.97);
+  }
+  body::before {
+    opacity: 0.35;
+  }
+}
+
+/* --- Base ---------------------------------------------------------------- */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* Nothing may scroll the viewport sideways on a phone. */
+    overflow-x: hidden;
+  }
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+    /* iOS Safari: keep a sticky header clear of the notch */
+    -webkit-text-size-adjust: 100%;
   }
 
+  /* Long Arabic paragraphs and long ids both need to wrap rather than widen. */
+  p, td, th {
+    overflow-wrap: anywhere;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* --- Letterforms ---------------------------------------------------------
+   Thmanyah's optional OpenType features are reserved for headings, sub-heads
+   and buttons, so body text and data keep the plain letterforms and stay easy
+   to scan:
+     ss01, ss08, salt, swsh  Arabic swash forms, single-storey a and g
+     ss03-ss07               alternate fatha shapes (they compete for the same
+                             mark, so the first one listed wins)
+     dlig                    discretionary ligatures
+     frac                    1/2, 1/4, 3/4 as fraction glyphs
+   Anything else that reads as a button opts in with the font-ornate utility.
+-------------------------------------------------------------------------- */
+h1, h2, h3, h4,
+button,
+[data-slot="button"],
+[data-slot="tabs-trigger"],
+[data-slot="empty-title"],
+/* in Arabic, status pills and header links get the full set too */
+html[lang="ar"] [data-slot="badge"],
+html[lang="ar"] header nav a {
+  font-feature-settings: "ss01", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08", "salt", "swsh", "dlig", "frac";
+}
+
+@utility font-ornate {
+  font-feature-settings: "ss01", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08", "salt", "swsh", "dlig", "frac";
+}
+
+/* Letter-spacing pulls joined Arabic letters apart, so tracking utilities are
+   neutralised in Arabic. Deliberately outside any @layer: layered rules lose
+   to Tailwind's utilities layer regardless of specificity, so this has to be
+   unlayered to win. */
+html[lang="ar"] [class*="tracking-"] {
+  letter-spacing: normal;
+}
+
+/* No double-tap-to-zoom delay on controls; pinch zoom stays available. */
+a, button, input, label, select, [role="tab"], [role="combobox"], [role="option"] {
+  touch-action: manipulation;
+}
+
+/* ===========================================================================
+   Namtheg: dark navy glass.
+
+   The house theme above is light. This app keeps its dark glass look, so the
+   html element carries a permanent .dark class (no toggle, no provider) and
+   this block designs that .dark palette against the navy system rather than
+   leaving shadcn's neutral greys in place. Same rules as the light theme:
+   hue 250-264 on every surface, translucent cards over a fixed wash, navy
+   shadows, and the four status colours as the only saturated ones.
+
+   Order matters: this block must stay after the theme above, so its .dark
+   tokens beat both the generated .dark block and the theme's :root.
+=========================================================================== */
+.dark {
+  color-scheme: dark;
+
+  --background: oklch(0.145 0.032 263);
+  --foreground: oklch(0.95 0.012 250);
+
+  /* White at a few percent, tinted navy: what reads as glass on a dark wash. */
+  --card: oklch(0.88 0.035 252 / 0.07);
+  --card-foreground: oklch(0.95 0.012 250);
+  --popover: oklch(0.2 0.04 262 / 0.9);
+  --popover-foreground: oklch(0.95 0.012 250);
+
+  /* The accent is the light end of the navy family: sky blue on dark. */
+  --primary: oklch(0.8 0.11 240);
+  --primary-foreground: oklch(0.17 0.045 262);
+
+  --secondary: oklch(0.88 0.035 252 / 0.1);
+  --secondary-foreground: oklch(0.93 0.02 250);
+
+  --muted: oklch(0.88 0.035 252 / 0.08);
+  --muted-foreground: oklch(0.74 0.035 255);
+
+  --accent: oklch(0.8 0.08 245 / 0.14);
+  --accent-foreground: oklch(0.96 0.015 245);
+
+  --destructive: oklch(0.7 0.19 22);
+
+  --border: oklch(0.85 0.04 255 / 0.13);
+  --input: oklch(0.85 0.04 255 / 0.2);
+  --ring: oklch(0.76 0.11 240);
+
+  /* The lit top edge is an inset highlight on dark glass; the float is a deep
+     navy shadow rather than black. */
+  --glass-edge: oklch(1 0 0 / 0.1);
+  --glass-shadow: inset 0 1px 0 0 oklch(1 0 0 / 0.08), 0 1px 2px oklch(0.08 0.04 264 / 0.35), 0 18px 44px -18px oklch(0.06 0.04 264 / 0.8);
+  --popup-shadow: 0 0 0 1px oklch(0.85 0.04 255 / 0.16), 0 2px 6px oklch(0.06 0.04 262 / 0.35), 0 24px 56px -12px oklch(0.04 0.03 262 / 0.75);
+  --scrim: oklch(0.08 0.04 262 / 0.55);
+
+  /* Charts step from light to dark here, the reverse of the light theme, so
+     the main series is the brightest thing on the dark card. */
+  --chart-1: oklch(0.8 0.11 240);
+  --chart-2: oklch(0.62 0.15 262);
+  --chart-3: oklch(0.7 0.13 276);
+  --chart-4: oklch(0.52 0.09 250);
+  --chart-5: oklch(0.9 0.05 234);
+
+  --sidebar: oklch(0.88 0.035 252 / 0.05);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/* The wash, dark: the same four off-centre pools, lower and deeper, so the
+   glass has something to refract without lifting the page out of the dark. */
+.dark body::before {
+  background-image:
+    radial-gradient(50rem 34rem at 6% -10%, oklch(0.55 0.14 250 / 0.34), transparent 60%),
+    radial-gradient(44rem 32rem at 100% 4%, oklch(0.62 0.12 232 / 0.2), transparent 62%),
+    radial-gradient(46rem 40rem at 88% 96%, oklch(0.45 0.16 276 / 0.3), transparent 62%),
+    radial-gradient(38rem 34rem at 22% 88%, oklch(0.5 0.13 264 / 0.2), transparent 64%);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .dark {
+    --card: oklch(0.22 0.04 262 / 0.95);
+    --popover: oklch(0.2 0.04 262 / 0.98);
+    --sidebar: oklch(0.2 0.04 262 / 0.95);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .dark {
+    --card: oklch(0.21 0.04 262 / 0.97);
+    --popover: oklch(0.2 0.04 262 / 0.99);
+    --sidebar: oklch(0.2 0.04 262 / 0.97);
+  }
+}
+
+@layer base {
   ::selection {
-    background: rgba(79, 195, 247, 0.28);
-    color: #ffffff;
+    background-color: oklch(0.8 0.11 240 / 0.3);
+    color: var(--foreground);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.85 0.04 255 / 0.2) transparent;
   }
 }
 
-@layer components {
-  /* ── Liquid glass surfaces ──────────────────────────────────────────────── */
-  .glass {
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: var(--glass-border);
-    border-radius: var(--radius);
-    box-shadow: var(--glass-highlight), var(--glass-shadow);
+/* --- Dashboard pages -------------------------------------------------------
+   Each stage page is a size container named "page". When it is wide and tall
+   enough it locks into a bento grid that fills it, and long content scrolls
+   inside its card; below that it is an ordinary scrolling column of cards.
+   Container queries rather than media queries on purpose: the results report
+   is exported by cloning it off-screen at 1280px, and outside a page container
+   the clone falls back to the unlocked layout with every card at full height.
+-------------------------------------------------------------------------- */
+@custom-variant lock {
+  @container page (min-width: 72rem) and (min-height: 34rem) {
+    @slot;
   }
-
-  .glass-hover {
-    transition: all 0.3s ease;
-  }
-  .glass-hover:hover {
-    background: var(--glass-bg-hover);
-    transform: translateY(-2px);
-    box-shadow: var(--glass-highlight), var(--glass-shadow-hover);
-  }
-
-  .glass-strong {
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
-    backdrop-filter: var(--glass-blur-strong);
-    -webkit-backdrop-filter: var(--glass-blur-strong);
-    border: var(--glass-border);
-    box-shadow: var(--glass-highlight), var(--glass-shadow);
-  }
-
-  /* Aliases kept so any unconverted markup still reads as glass, not flat */
-  .ghost-border {
-    border: var(--glass-border);
-  }
-  .card-shadow {
-    box-shadow: var(--glass-highlight), var(--glass-shadow);
-  }
-  .ambient-shadow {
-    box-shadow: var(--glass-shadow-hover);
-  }
-
-  /* ── Section title (centered, gradient underline) ───────────────────────── */
-  .section-title {
-    position: relative;
-    text-align: center;
-    font-family: "IBM Plex Sans", sans-serif;
-    font-weight: 700;
-    color: var(--text-primary);
-  }
-  .section-title::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    bottom: -12px;
-    transform: translateX(-50%);
-    width: 50px;
-    height: 3px;
-    border-radius: 3px;
-    background: var(--accent-gradient);
-  }
-
-  /* ── Chips ──────────────────────────────────────────────────────────────── */
-  .tag {
-    font-family: "JetBrains Mono", monospace;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--accent);
-    background: rgba(79, 195, 247, 0.08);
-    border: 1px solid rgba(79, 195, 247, 0.25);
-    border-radius: var(--radius-pill);
-    padding: 4px 12px;
-    white-space: nowrap;
-  }
-  .skill-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    background: var(--glass-bg);
-    border: var(--glass-border);
-    border-radius: var(--radius-pill);
-    padding: 6px 14px;
-    transition: all 0.3s ease;
-  }
-  .skill-tag:hover {
-    color: var(--accent);
-    border-color: rgba(79, 195, 247, 0.5);
-    background: rgba(79, 195, 247, 0.08);
-    transform: translateY(-1px);
-  }
-
-  /* ── Buttons ────────────────────────────────────────────────────────────── */
-  .btn-primary {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    font-weight: 700;
-    color: #0a0a0f;
-    background: var(--accent-gradient);
-    border-radius: var(--radius-sm);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 0 24px rgba(79, 195, 247, 0.18);
-    transition: all 0.3s ease;
-  }
-  .btn-primary:hover {
-    transform: translateY(-2px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 0 40px rgba(79, 195, 247, 0.35);
-  }
-  .btn-glass {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    font-weight: 600;
-    color: var(--text-primary);
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: var(--glass-border);
-    border-radius: var(--radius-sm);
-    transition: all 0.3s ease;
-  }
-  .btn-glass:hover {
-    color: var(--accent);
-    border-color: rgba(79, 195, 247, 0.5);
-    transform: translateY(-2px);
-  }
-
-  /* ── Ambient glow field (fixed, behind everything) ──────────────────────── */
-  .ambient-field {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    overflow: hidden;
-    filter: blur(40px);
-  }
-  .ambient-field::before,
-  .ambient-field::after {
-    content: "";
-    position: absolute;
-    border-radius: 50%;
-  }
-  .ambient-field::before {
-    top: -10%;
-    left: -5%;
-    width: 55vw;
-    height: 55vw;
-    background:
-      radial-gradient(circle at 30% 30%, var(--glow-cyan), transparent 60%),
-      radial-gradient(circle at 80% 10%, var(--glow-blue), transparent 55%);
-  }
-  .ambient-field::after {
-    bottom: -15%;
-    right: -10%;
-    width: 60vw;
-    height: 60vw;
-    background:
-      radial-gradient(circle at 70% 70%, var(--glow-violet), transparent 60%),
-      radial-gradient(circle at 20% 80%, var(--glow-cyan), transparent 55%);
+}
+/* a locked page on a short laptop window, where captions give up space first */
+@custom-variant lock-short {
+  @container page (min-width: 72rem) and (min-height: 34rem) and (max-height: 44rem) {
+    @slot;
   }
 }
 
-@layer utilities {
-  .shimmer {
-    background: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0.04) 25%,
-      rgba(255, 255, 255, 0.1) 50%,
-      rgba(255, 255, 255, 0.04) 75%
-    );
-    background-size: 200% 100%;
-    animation: shimmer 1.8s infinite;
-  }
-}
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.16); border-radius: 20px; }
-::-webkit-scrollbar-thumb:hover { background-color: rgba(79, 195, 247, 0.5); }
-
-/* Custom range slider */
-input[type=range] {
-  -webkit-appearance: none;
-  appearance: none;
-  background: transparent;
-}
-input[type=range]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  height: 20px;
-  width: 20px;
-  border-radius: 50%;
-  background: #4fc3f7;
-  box-shadow: 0 0 12px rgba(79, 195, 247, 0.5);
-  cursor: pointer;
-  margin-top: -8px;
-}
-input[type=range]::-webkit-slider-runnable-track {
-  width: 100%;
-  height: 4px;
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 2px;
-}
-
-/* Sidebar transition and collapse overrides */
-.ml-64 {
-  transition: margin-left 0.3s cubic-bezier(0.32, 0.94, 0.6, 1);
-}
-body.sidebar-collapsed .ml-64 {
-  margin-left: 76px !important;
-}
-
-/* Shimmer keyframe for gradient buttons */
-@keyframes shimmer-effect {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-}
-.animate-shimmer {
-  animation: shimmer-effect 2s infinite linear;
-}
-
-/* Respect reduced-motion: keep the static ambient glow, stop its perpetual drift. */
-@media (prefers-reduced-motion: reduce) {
-  .animate-drift,
-  .animate-shimmer {
-    animation: none !important;
-  }
+/* Toasts sit above the stage bar at the bottom of the dashboard rather than on
+   top of it. Unlayered, so it beats the viewport's own bottom-4 utility. */
+[data-slot="toast-viewport"] {
+  bottom: calc(3.5rem + 1rem);
 }
