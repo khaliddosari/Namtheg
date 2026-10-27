@@ -1,5 +1,6 @@
 import inspect
 import shutil
+import time
 from urllib.parse import unquote
 
 import numpy as np
@@ -7,7 +8,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from app import r2, storage
+from app import main, r2, storage
 from app.config import settings
 from app.main import app as fastapi_app
 from app.pipeline import audit, imbalance
@@ -19,10 +20,12 @@ class FakeS3:
 
     def __init__(self):
         self.objects: dict[str, bytes] = {}
+        self.uploaded: list[str] = []  # every key sent up, in order
 
     def upload_file(self, path, bucket, key):
         with open(path, "rb") as f:
             self.objects[key] = f.read()
+        self.uploaded.append(key)
 
     def download_file(self, bucket, key, path):
         if key not in self.objects:
@@ -33,7 +36,7 @@ class FakeS3:
     def head_object(self, Bucket, Key):
         if Key not in self.objects:
             raise _missing()
-        return {}
+        return {"ContentLength": len(self.objects[Key])}
 
     def generate_presigned_url(self, op, Params, ExpiresIn):
         if op == "put_object":
@@ -113,21 +116,68 @@ def test_imbalance_assessment_thresholds():
     assert imbalance.assess(pd.Series([1.0, 2.0]), "regression")["applies"] is False
 
 
+def _direct_upload(client, fake_r2, content: bytes) -> str:
+    """Start a direct upload of a CSV and put it where the browser's PUT would."""
+    r = client.post("/uploads/direct", json={"filename": "big.csv", "size": len(content)})
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    fake_r2.objects[f"test/runs/{run_id}/raw/source.csv"] = content
+    return run_id
+
+
 def test_large_files_upload_straight_to_r2(fake_r2):
-    """The browser PUTs to a presigned URL; /complete pulls the file and ingests it."""
+    """The browser PUTs to a presigned URL; /complete answers at once and the
+    file is read after the response (TestClient runs that before returning)."""
     client = TestClient(fastapi_app)
     csv = INSURANCE_CSV.read_bytes()
     r = client.post("/uploads/direct", json={"filename": "big.csv", "size": len(csv)})
     assert r.status_code == 200, r.text
     run_id, url = r.json()["run_id"], r.json()["upload_url"]
     assert url.startswith(f"https://r2.example/test/runs/{run_id}/raw/source.csv?upload")
+    assert client.get(f"/runs/{run_id}/status").json()["status"] == "uploading"
     assert client.post(f"/uploads/{run_id}/complete").status_code == 409  # nothing uploaded yet
 
-    fake_r2.objects[f"test/runs/{run_id}/raw/source.csv"] = csv  # what the browser's PUT does
+    raw_key = f"test/runs/{run_id}/raw/source.csv"
+    fake_r2.objects[raw_key] = csv  # what the browser's PUT does
     r = client.post(f"/uploads/{run_id}/complete")
-    assert r.status_code == 200 and r.json()["n_rows"] == 1338
+    assert r.status_code == 202 and r.json() == {"run_id": run_id, "status": "uploading"}
+    assert client.get(f"/runs/{run_id}/status").json()["status"] == "uploaded"
+    assert storage.read_json(run_id, "ingest.json")["n_rows"] == 1338
+    assert client.get(f"/runs/{run_id}/preview").json()["n_columns"] == 7
+    # The raw file came from R2 under this key, so only the dataset goes back up.
+    assert raw_key not in fake_r2.uploaded
+    assert f"test/runs/{run_id}/{storage.DATASET_FILE}" in fake_r2.uploaded
     assert client.post(f"/uploads/{run_id}/complete").status_code == 409  # only once
     assert client.post("/uploads/direct", json={"filename": "x.pdf", "size": 10}).status_code == 400
+
+
+def test_direct_upload_that_cannot_be_read_fails_with_the_reason(fake_r2):
+    client = TestClient(fastapi_app)
+    run_id = _direct_upload(client, fake_r2, b"a,b\n")  # a header and no rows
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 202
+    status = client.get(f"/runs/{run_id}/status").json()
+    assert status["status"] == "failed" and "no data rows" in status["error"]
+
+
+def test_direct_upload_is_read_once_and_a_stale_read_can_restart(fake_r2, monkeypatch):
+    client = TestClient(fastapi_app)
+    run_id = _direct_upload(client, fake_r2, INSURANCE_CSV.read_bytes())
+    reads = []
+    monkeypatch.setattr(main, "_read_direct_upload", lambda *args: reads.append(args))
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 202
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 202  # still reading
+    assert len(reads) == 1
+    storage.update_status(run_id, reading_started=time.time() - main.READ_STALE_SECONDS - 1)
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 202  # presumed dead: read again
+    assert len(reads) == 2
+
+
+def test_direct_upload_over_the_limit_is_refused_before_reading(fake_r2, monkeypatch):
+    client = TestClient(fastapi_app)
+    run_id = _direct_upload(client, fake_r2, b"a,b\n1,2\n")
+    monkeypatch.setattr(r2, "object_size", lambda *args: main.MAX_DIRECT_UPLOAD_BYTES + 1)
+    assert client.post(f"/uploads/{run_id}/complete").status_code == 413
+    assert client.get(f"/runs/{run_id}/status").json()["status"] == "uploading"
 
 
 def test_direct_upload_needs_r2():

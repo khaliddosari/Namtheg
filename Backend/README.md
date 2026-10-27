@@ -76,7 +76,7 @@ python -m pytest tests          # engines run in-process on CPU as a harness; no
 |--------|------|---------|
 | `GET`  | `/health` | Health, LLM config, sandbox backend, training service, R2 |
 | `POST` | `/upload` (multipart `file`) | Upload a table or image zip (≤ 30 MB) → `run_id`, columns, preview, ingest report |
-| `POST` | `/uploads/direct` → `/uploads/{run_id}/complete` | Larger files (≤ 2 GB): presigned PUT straight to R2, then ingest |
+| `POST` | `/uploads/direct` → `/uploads/{run_id}/complete` | Larger files (≤ 2 GB): presigned PUT straight to R2; `/complete` answers 202 and reads the file in the background, and the run's status turns `uploaded` (or `failed` with the reason) |
 | `GET`  | `/runs/{run_id}/preview` | First 20 rows + column list |
 | `POST` | `/runs/{run_id}/start` | Body `{"task", "target", "date_column", "series_id_column", "horizon"}`; `{}` = clustering, `{"target": ...}` = auto-detect |
 | `POST` | `/runs/{run_id}/cancel` | Stop the job and its GPU work |

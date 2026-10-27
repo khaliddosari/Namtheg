@@ -38,6 +38,10 @@ app.add_middleware(
 UPLOAD_EXTENSIONS = (*SUPPORTED_EXTENSIONS, ".zip")
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # through the frontend proxy
 MAX_DIRECT_UPLOAD_BYTES = 2 * 1024 ** 3  # browser straight to R2
+# No read of a direct upload takes this long: one that started longer ago died
+# with its server, and /complete may start another. The frontend offers to read
+# again after 20 minutes, so keep this below that.
+READ_STALE_SECONDS = 15 * 60
 
 
 @app.middleware("http")
@@ -64,13 +68,16 @@ def health() -> dict:
     }
 
 
-def _ingest(run_id: str, raw: Path, filename: str) -> dict:
-    """Parse a stored upload into the run's canonical dataset (blocking)."""
+def _ingest(run_id: str, raw: Path, filename: str, *, raw_in_r2: bool = False) -> dict:
+    """Parse a stored upload into the run's canonical dataset (blocking).
+    `raw_in_r2`: the raw file was fetched from R2 (a direct upload), so it is
+    already there under the key persist() would use and isn't sent back up."""
     if raw.suffix.lower() == ".zip":
         report = ingest_image_zip(raw, storage.run_dir(run_id))
     else:
         report = ingest_file(raw, storage.run_dir(run_id) / storage.DATASET_FILE, filename)
-    storage.persist(run_id, f"raw/{raw.name}")
+    if not raw_in_r2:
+        storage.persist(run_id, f"raw/{raw.name}")
     storage.persist(run_id, storage.DATASET_FILE)
     storage.write_json(run_id, "ingest.json", report)
     storage.write_status(run_id, "uploaded", filename=filename, source_format=report["source_format"])
@@ -150,25 +157,47 @@ def start_direct_upload(req: DirectUploadRequest) -> dict:
             "expires_in": settings.r2_url_ttl_seconds}
 
 
-@app.post("/uploads/{run_id}/complete")
-async def complete_direct_upload(run_id: str) -> dict:
+@app.post("/uploads/{run_id}/complete", status_code=202)
+def complete_direct_upload(run_id: str, background: BackgroundTasks) -> dict:
+    """Start reading a direct upload that has arrived in R2, and answer at
+    once: fetching and parsing a large file takes minutes, longer than the
+    proxies in front of this API wait on a request. Poll /runs/{run_id}/status:
+    it stays "uploading" while the file is read, then turns "uploaded", or
+    "failed" with the reason. A call while a read is under way starts no other."""
     if not storage.run_exists(run_id):
         raise HTTPException(404, "run_id not found")
     status_data = storage.read_status(run_id)
     if status_data.get("status") != "uploading":
         raise HTTPException(409, "This upload was already completed.")
+    started = status_data.get("reading_started")
+    if started and time.time() - started < READ_STALE_SECONDS:
+        return {"run_id": run_id, "status": "uploading"}
     ext = Path(status_data["filename"]).suffix.lower()
-    raw = storage.raw_upload_path(run_id, ext)
-    if not r2.download(run_id, f"raw/source{ext}", raw):
+    size = r2.object_size(run_id, f"raw/source{ext}")
+    if size is None:
         raise HTTPException(409, "The file hasn't arrived in storage yet.")
-    if raw.stat().st_size > MAX_DIRECT_UPLOAD_BYTES:
+    if size > MAX_DIRECT_UPLOAD_BYTES:
         raise HTTPException(413, "File too large. Maximum size is 2 GB.")
+    storage.update_status(run_id, reading_started=time.time())
+    background.add_task(_read_direct_upload, run_id, status_data["filename"], ext)
+    return {"run_id": run_id, "status": "uploading"}
+
+
+def _read_direct_upload(run_id: str, filename: str, ext: str) -> None:
+    """Fetch a direct upload from R2 and read it into the run's dataset. Runs
+    after /complete has answered, so the outcome goes to the run's status."""
+    raw = storage.raw_upload_path(run_id, ext)
     try:
-        report = await run_in_threadpool(_ingest, run_id, raw, status_data["filename"])
+        if not r2.download(run_id, f"raw/source{ext}", raw):
+            raise IngestError("The file could not be fetched from storage. Try uploading it again.")
+        if raw.stat().st_size > MAX_DIRECT_UPLOAD_BYTES:
+            raise IngestError("File too large. Maximum size is 2 GB.")
+        _ingest(run_id, raw, filename, raw_in_r2=True)
     except IngestError as e:
         storage.write_status(run_id, "failed", error=str(e))
-        raise HTTPException(400, str(e))
-    return _upload_response(run_id, status_data["filename"], report)
+    except Exception as e:
+        log.exception("Reading upload %s failed", run_id)
+        storage.write_status(run_id, "failed", error=f"Upload failed: {e}")
 
 
 @app.get("/runs/{run_id}/preview")

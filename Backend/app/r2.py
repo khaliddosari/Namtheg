@@ -81,6 +81,18 @@ def download(run_id: str, name: str, dest: Path) -> bool:
         return False
 
 
+def object_size(run_id: str, name: str) -> int | None:
+    """Size in bytes of an object, or None if R2 is off or the object is absent."""
+    if not enabled():
+        return None
+    try:
+        return int(_s3().head_object(Bucket=settings.r2_bucket, Key=object_key(run_id, name))["ContentLength"])
+    except Exception as e:
+        if not _is_missing(e):
+            log.warning("R2 lookup of %s/%s failed: %s", run_id, name, e)
+        return None
+
+
 def exists(run_id: str, name: str) -> bool:
     if not enabled():
         return False
