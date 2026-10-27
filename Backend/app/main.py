@@ -13,9 +13,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from app import jobs, r2, storage
+from app import accounts, jobs, r2, storage
 from app.config import settings
-from app.data.images import ingest_image_zip
 from app.data.ingest import SUPPORTED_EXTENSIONS, IngestError, ingest_file
 from app.deploy.modal_deploy import deploy_run
 from app.pipeline import export, tasks
@@ -30,12 +29,16 @@ app = FastAPI(title="Namtheg Backend (MVP)", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # The browser reaches this API through the frontend's same-origin proxy,
+    # which is the only place the session cookie exists, so no cross-origin
+    # caller ever needs credentials.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(accounts.router)
 
-UPLOAD_EXTENSIONS = (*SUPPORTED_EXTENSIONS, ".zip")
+UPLOAD_EXTENSIONS = SUPPORTED_EXTENSIONS
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # through the frontend proxy
 MAX_DIRECT_UPLOAD_BYTES = 2 * 1024 ** 3  # browser straight to R2
 # No read of a direct upload takes this long: one that started longer ago died
@@ -72,10 +75,7 @@ def _ingest(run_id: str, raw: Path, filename: str, *, raw_in_r2: bool = False) -
     """Parse a stored upload into the run's canonical dataset (blocking).
     `raw_in_r2`: the raw file was fetched from R2 (a direct upload), so it is
     already there under the key persist() would use and isn't sent back up."""
-    if raw.suffix.lower() == ".zip":
-        report = ingest_image_zip(raw, storage.run_dir(run_id))
-    else:
-        report = ingest_file(raw, storage.run_dir(run_id) / storage.DATASET_FILE, filename)
+    report = ingest_file(raw, storage.run_dir(run_id) / storage.DATASET_FILE, filename)
     if not raw_in_r2:
         storage.persist(run_id, f"raw/{raw.name}")
     storage.persist(run_id, storage.DATASET_FILE)
@@ -94,7 +94,7 @@ def _upload_response(run_id: str, filename: str, report: dict) -> dict:
         "columns": [str(c) for c in df.columns],
         "preview": _json.loads(df.to_json(orient="records", date_format="iso")),
         "n_rows": report["n_rows"],
-        "ingest": {k: report.get(k) for k in ("source_format", "actions", "warnings", "classes")},
+        "ingest": {k: report.get(k) for k in ("source_format", "actions", "warnings")},
     }
 
 
@@ -106,9 +106,9 @@ def _check_extension(filename: str | None) -> str:
 
 
 @app.post("/upload")
-async def upload_dataset(file: UploadFile = File(...)) -> dict:
+async def upload_dataset(request: Request, file: UploadFile = File(...)) -> dict:
     """Store the raw upload, convert it once to the run's dataset (a typed
-    Parquet DataFrame, or an image manifest for zips), and return a preview.
+    Parquet DataFrame), and return a preview.
     The frontend always prefers /uploads/direct (straight to R2, any size);
     this is only the fallback for when the backend has no R2 configured, so
     it's capped at 30 MB."""
@@ -135,11 +135,12 @@ async def upload_dataset(file: UploadFile = File(...)) -> dict:
         log.exception("Upload failed for run %s", run_id)
         shutil.rmtree(storage.run_dir(run_id), ignore_errors=True)
         raise HTTPException(500, f"Upload failed: {e}")
+    await run_in_threadpool(accounts.link_run, request, run_id)
     return _upload_response(run_id, file.filename, report)
 
 
 @app.post("/uploads/direct")
-def start_direct_upload(req: DirectUploadRequest) -> dict:
+def start_direct_upload(req: DirectUploadRequest, request: Request) -> dict:
     """The primary upload path, whatever the file's size: returns a
     time-limited URL the browser PUTs the file straight to in R2, skipping the
     backend and the frontend proxy entirely; /uploads/{run_id}/complete then
@@ -152,6 +153,7 @@ def start_direct_upload(req: DirectUploadRequest) -> dict:
         raise HTTPException(413, "File too large. Maximum size is 2 GB.")
     run_id = storage.new_run_id()
     storage.write_status(run_id, "uploading", filename=req.filename, size=req.size)
+    accounts.link_run(request, run_id)
     return {"run_id": run_id, "method": "PUT",
             "upload_url": r2.presigned_upload_url(run_id, f"raw/source{ext}"),
             "expires_in": settings.r2_url_ttl_seconds}
@@ -220,7 +222,7 @@ def preview(run_id: str) -> dict:
 
 
 @app.post("/runs/{run_id}/start")
-def start_run(run_id: str, req: StartRunRequest, background: BackgroundTasks) -> dict:
+def start_run(run_id: str, req: StartRunRequest, request: Request, background: BackgroundTasks) -> dict:
     """Validate the task, then start the run in the background (a Modal job in
     production). Poll /runs/{run_id}/status for progress."""
     if not storage.run_exists(run_id):
@@ -228,11 +230,12 @@ def start_run(run_id: str, req: StartRunRequest, background: BackgroundTasks) ->
     if storage.read_status(run_id).get("status") in ("queued", "running"):
         raise HTTPException(409, "This run is already in progress.")
     try:
-        spec = tasks.resolve(run_id, req.task, req.target, req.date_column, req.series_id_column, req.horizon)
+        spec = tasks.resolve(run_id, req.task, req.target)
     except tasks.TaskError as e:
         raise HTTPException(400, str(e))
     storage.write_status(run_id, "queued", task=spec["task"], target=spec.get("target"), queued_at=time.time())
     storage.update_status(run_id, **jobs.start(run_id, spec, background))
+    accounts.link_run(request, run_id)
     return {"run_id": run_id, "status": "queued", **spec}
 
 
@@ -270,16 +273,14 @@ DOWNLOADS = {
     # kind: (artifact, filename suffix)
     "cleaned_csv": (export.CLEANED_CSV, "_cleaned.csv"),
     "model": (export.MODEL_PACKAGE, "_model.zip"),
-    "forecast": (export.FORECAST_CSV, "_forecast.csv"),
 }
 
 
 @app.get("/runs/{run_id}/download/{kind}")
 def download(run_id: str, kind: str):
     """cleaned_csv: the dataset the models trained on. model: the winning model
-    package (weights, runtime, metadata, predict.py). forecast: the forecast
-    with 80% intervals. With R2 on, this redirects to a presigned URL that
-    expires after R2_URL_TTL_SECONDS."""
+    package (weights, runtime, metadata, predict.py). With R2 on, this
+    redirects to a presigned URL that expires after R2_URL_TTL_SECONDS."""
     if kind not in DOWNLOADS:
         raise HTTPException(404, f"Unknown download {kind!r}. Available: {', '.join(DOWNLOADS)}.")
     if not storage.run_exists(run_id):
@@ -360,11 +361,11 @@ def model_schema(run_id: str) -> dict:
             raise HTTPException(409, "No trained model - finish a successful run first.")
         bundle = joblib.load(bundle_path)
 
-    # First engineered row gives a realistic baseline for the predict form.
+    # The first raw row gives a realistic baseline for the predict form:
+    # predictions take the raw columns, and the model cleans them itself.
     sample: dict = {}
-    eng_path = storage.engineered_path(run_id)
-    if bundle["feature_cols"] and (eng_path.exists() or (storage.run_dir(run_id) / "engineered.csv").exists()):
-        row = storage.engineered_head(run_id, 1)
+    if bundle["feature_cols"]:
+        row = storage.dataset_head(run_id, 1)
         target = storage.read_status(run_id).get("target")
         for c in bundle["feature_cols"]:
             if c in row.columns:
@@ -372,6 +373,8 @@ def model_schema(run_id: str) -> dict:
                 # Cast numpy scalars to plain JSON-safe types.
                 if pd.isna(val):
                     sample[c] = None
+                elif isinstance(val, pd.Timestamp):
+                    sample[c] = val.isoformat()
                 elif hasattr(val, "item"):
                     sample[c] = val.item()
                 else:
@@ -386,7 +389,6 @@ def model_schema(run_id: str) -> dict:
         "problem_type": bundle.get("problem_type"),
         "feature_cols": bundle["feature_cols"],
         "class_labels": bundle.get("class_labels"),
-        "forecast": bundle.get("forecast"),
         "sample": sample,
     }
 

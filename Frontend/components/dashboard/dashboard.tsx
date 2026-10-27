@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/site-header";
 import type { Tone } from "@/components/panel";
 import type { RunStatus } from "@/lib/api";
-import { hasStarted, isRunActive, isRunFailed, isUploadFailed, useRun } from "./use-run";
+import { isRunActive, isRunFailed, isUploadFailed, landingStage, useRun } from "./use-run";
+import { AccountControl } from "./account";
 import { Pager } from "./pager";
 import { DataStage } from "./data-stage";
 import { TrainingStage } from "./training-stage";
@@ -136,7 +137,7 @@ export function Dashboard() {
   useEffect(() => {
     if (!runId || !run.status || landedFor.current === runId) return;
     landedFor.current = runId;
-    goTo(run.status.status === "succeeded" ? 2 : hasStarted(run.status) ? 1 : 0, { instant: true, history: "replace" });
+    goTo(stageIndex(landingStage(run.status)), { instant: true, history: "replace" });
   }, [runId, run.status, goTo]);
 
   // Swipes and trackpad scrolls settle on a page; adopt it once they stop.
@@ -213,6 +214,18 @@ export function Dashboard() {
     goTo(0, { history: "none" });
   }, [adoptRun, goTo]);
 
+  // A run picked from the account opens wherever it has got to, as its link would.
+  const openRun = useCallback(
+    (id: string, status: RunStatus) => {
+      const stage = stageIndex(landingStage(status));
+      if (id === runIdRef.current) return goTo(stage);
+      writeUrl(id, stage, "push");
+      adoptRun(id);
+      goTo(stage, { history: "none" });
+    },
+    [adoptRun, goTo]
+  );
+
   const tones = stageTones(runId, run);
 
   return (
@@ -221,10 +234,13 @@ export function Dashboard() {
       <SiteHeader
         onBrandClick={() => goTo(0)}
         start={
-          <Button variant="outline" size="sm" onClick={newRun} aria-label="New run" className="size-9 px-0 sm:w-auto sm:ps-2 sm:pe-2.5 lg:h-8">
-            <Plus />
-            <span className="hidden sm:inline">New run</span>
-          </Button>
+          <div className="flex min-w-0 items-center gap-2">
+            <Button variant="outline" size="sm" onClick={newRun} aria-label="New run" className="size-9 px-0 sm:w-auto sm:ps-2 sm:pe-2.5 lg:h-8">
+              <Plus />
+              <span className="hidden sm:inline">New run</span>
+            </Button>
+            <AccountControl runId={runId} onOpenRun={openRun} />
+          </div>
         }
       />
 

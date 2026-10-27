@@ -2,7 +2,7 @@
 // page, plus a keyboard walk that checks every focus stop shows a ring.
 // Run: npm run a11y
 const fs = require("fs");
-const { APP, launch, resetMock } = require("./lib");
+const { APP, MOCK, launch, resetMock } = require("./lib");
 
 const AXE = fs.readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
 const PAGES = [
@@ -91,6 +91,41 @@ async function keyboardWalk(page) {
   const r = await axe(page, [['[data-slot="dialog-content"]']]);
   console.log(`dialog: violations ${r.violations.length}`, r.violations.map((v) => v.id).join(", "));
   if (r.violations.length) problems++;
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "What the analyst found" }).click();
+  await page.waitForTimeout(400);
+  const a = await axe(page, [['[data-slot="dialog-content"]']]);
+  console.log(`analyst dialog: violations ${a.violations.length}`, a.violations.map((v) => v.id).join(", "));
+  if (a.violations.length) problems++;
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+
+  // Signing up, step by step, then the account it opens.
+  const dialogAxe = async (name) => {
+    await page.waitForTimeout(400);
+    const d = await axe(page, [['[data-slot="dialog-content"]']]);
+    console.log(`${name}: violations ${d.violations.length}`, d.violations.map((v) => v.id).join(", "));
+    if (d.violations.length) problems++;
+  };
+  const dialog = page.locator('[data-slot="dialog-content"]'); // not getByRole: toasts are dialogs too
+  await page.locator("header").getByRole("button", { name: "Sign in" }).click();
+  await dialogAxe("sign-in dialog");
+  await dialog.getByRole("button", { name: "Create account" }).click();
+  await dialog.getByRole("button", { name: "Email me a code" }).click();
+  await dialog.getByRole("alert").waitFor();
+  await dialogAxe("sign-up dialog, name missing");
+  await dialog.getByLabel("Name", { exact: true }).fill("Ada Lovelace");
+  await dialog.getByLabel("Email", { exact: true }).fill("ada@example.com");
+  await dialog.getByRole("button", { name: "Email me a code" }).click();
+  await dialog.getByText("Check your email").waitFor();
+  await dialogAxe("code dialog");
+  const { code } = await (await fetch(`${MOCK}/__mock/last_code?email=ada@example.com`)).json();
+  await dialog.getByLabel("Code", { exact: true }).fill(code);
+  await dialog.waitFor({ state: "hidden" });
+  await page.locator("header").getByRole("button", { name: "Account: Ada Lovelace" }).click();
+  await dialog.getByRole("list", { name: "My runs" }).waitFor();
+  await dialogAxe("account dialog");
   await browser.close();
   if (problems) process.exitCode = 1;
 })();

@@ -112,11 +112,13 @@ test("upload: drag and drop onto the dropzone", async (page, x) => {
   await page.getByRole("button", { name: "Start training" }).waitFor();
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
-test("upload: wrong file type is refused", async (page, x) => {
-  await page.goto(APP);
-  await page.setInputFiles("#dataset-input", { name: "photo.png", mimeType: "image/png", buffer: Buffer.from("x") });
-  await page.getByRole("alert").filter({ hasText: "Unsupported file type" }).waitFor();
-  x.ok(!(await page.getByRole("button", { name: "Upload and profile" }).count()), "should not offer upload");
+test("upload: wrong file types, image zips included, are refused", async (page, x) => {
+  for (const name of ["photo.png", "pets.zip"]) {
+    await page.goto(APP);
+    await page.setInputFiles("#dataset-input", { name, mimeType: "application/octet-stream", buffer: Buffer.from("x") });
+    await page.getByRole("alert").filter({ hasText: "Unsupported file type" }).waitFor();
+    x.ok(!(await page.getByRole("button", { name: "Upload and profile" }).count()), `${name} should not be offered for upload`);
+  }
 });
 
 test("upload: over 2 GB is refused", async (page, x) => {
@@ -222,37 +224,16 @@ test("configure: combobox search picks a target and highlights it", async (page,
   x.ok(head === "bmi", `preview should mark bmi, got ${head}`);
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
-test("configure: modes, forecast validation, forecast run end to end", async (page, x) => {
+test("configure: predicting a column is the only option", async (page, x) => {
   await page.goto(APP);
   await uploadCsv(page);
-  await page.getByRole("button", { name: "Find groups" }).click();
-  await page.getByText("No target: every column").waitFor();
-  await page.getByRole("button", { name: "Forecast over time" }).click();
-  await page.getByText("Pick the date column to start.").waitFor();
-  x.ok(await page.getByRole("button", { name: "Start training" }).isDisabled(), "start disabled without a date column");
-  await page.selectOption("#date-column", "age");
-  await page.fill("#horizon", "0");
-  await page.getByText("whole number from 1 to 1000").waitFor();
-  await page.fill("#horizon", "12");
-  x.ok(await page.getByRole("button", { name: "Start training" }).isEnabled(), "start enabled");
-  await page.getByRole("button", { name: "Start training" }).click();
-  await page.waitForFunction(() => new URL(location.href).searchParams.get("stage") === "training");
-  await page.getByRole("button", { name: "View results" }).waitFor({ timeout: 30000 });
-  await page.getByRole("button", { name: "View results" }).click();
-  await inStage(page, "results").getByText("MASE").first().waitFor();
-  await shot(page, "forecast-results");
-}, { allow: [{ status: 409, url: "/uploads/direct" }, { status: 409, url: "/result" }, { status: 409, url: "/model_schema" }] });
-
-test("configure: images zip runs image classification", async (page, x) => {
-  await page.goto(APP);
-  await page.setInputFiles("#dataset-input", { name: "pets.zip", mimeType: "application/zip", buffer: Buffer.from("PK fake") });
-  await page.getByRole("button", { name: "Upload and profile" }).click();
-  await page.getByText("Image classification: each folder").waitFor();
-  await page.getByRole("button", { name: "Start training" }).click();
-  await page.getByRole("button", { name: "View results" }).waitFor({ timeout: 30000 });
-  await page.getByRole("button", { name: "View results" }).click();
-  await inStage(page, "results").getByText("No plot for this run").waitFor();
-}, { allow: [{ status: 409 }, { status: 404, url: "/plot" }] });
+  for (const name of ["Find groups", "Forecast over time"]) {
+    x.ok(!(await page.getByRole("button", { name }).count()), `no "${name}" mode`);
+  }
+  x.ok((await page.locator("#target-column").inputValue()) === "charges", "the last column is the default target");
+  x.ok(await page.getByRole("button", { name: "Start training" }).isEnabled(), "start enabled with a target");
+  await shot(page, "configure");
+}, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
 // ---------- training
 test("training: start slides to training, tracks live stages, lands on results", async (page, x) => {
@@ -338,24 +319,24 @@ test("results: bare result with no extras and no plot", async (page, x) => {
   await shot(page, "results-bare");
 }, { allow: [{ status: 404, url: "/plot" }] });
 
-test("results: clustering silhouette is not a percentage", async (page, x) => {
-  await page.goto(`${APP}/?run=clu-done&stage=results`);
-  const r = inStage(page, "results");
-  await r.getByText("0.4121").first().waitFor();
-  x.ok(!(await r.getByText("41.21%").count()), "silhouette must not show as percent");
-  await shot(page, "results-clu");
-});
+test("results: what the analyst found opens in a dialog", async (page, x) => {
+  await page.goto(`${APP}/?run=reg-done&stage=results`);
+  await inStage(page, "results").getByRole("button", { name: "What the analyst found" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText("One insured person.").waitFor();
+  await dialog.getByText("Trained on a random sample of 1,000 of 1,338 rows").waitFor();
+  x.ok(await dialog.getByRole("cell", { name: "bmi", exact: true }).count(), "the data dictionary lists bmi");
+  x.ok(await dialog.getByText("From the name").count(), "a meaning that rests on the name says so");
+  await dialog.getByText("Treated children as categories").waitFor();
+  await dialog.getByText("Are the charges yearly or lifetime totals?").waitFor();
+  await shot(page, "analyst-dialog");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
 
-test("results: forecasting MASE ranks lower first and tuning improves downward", async (page, x) => {
-  await page.goto(`${APP}/?run=fc-done&stage=results`);
-  const r = inStage(page, "results");
-  await r.getByText("0.9731").first().waitFor();
-  const first = await r.locator("tbody tr").first().innerText();
-  x.ok(first.includes("AutoETS"), `AutoETS should rank first, got ${first}`);
-  await r.getByRole("button", { name: "Tuning" }).click();
-  await r.locator("dd").filter({ hasText: "1.1820" }).waitFor();
-  x.ok(await r.getByRole("link", { name: "Forecast CSV" }).count(), "forecast csv link");
-});
+  await page.goto(`${APP}/?run=bare-done&stage=results`);
+  await inStage(page, "results").getByText("Ridge").first().waitFor();
+  x.ok(!(await page.getByRole("button", { name: "What the analyst found" }).count()), "no analysis, no link");
+}, { allow: [{ status: 404, url: "/plot" }] });
 
 test("results: classification overfit warning", async (page) => {
   await page.goto(`${APP}/?run=clf-done&stage=results`);
@@ -619,6 +600,106 @@ test("nav: resize keeps the current stage", async (page, x) => {
     });
     x.ok(ok && (await activeStage(page)) === "stage-results", `after resize to ${v.width}x${v.height}`);
   }
+});
+
+// ---------- accounts
+const codeFor = async (email) => (await (await fetch(`${MOCK}/__mock/last_code?email=${encodeURIComponent(email)}`)).json()).code;
+const toastWith = (page, text) => page.locator('[data-slot="toast"]').filter({ hasText: text }).first();
+// The modal dialog only: toasts are dialogs too (non-modal ones), so getByRole("dialog") can match both.
+const modal = (page) => page.locator('[data-slot="dialog-content"]');
+
+test("account: create one with an emailed code, the open run is saved, sign out", async (page, x) => {
+  await page.goto(APP);
+  await uploadCsv(page);
+  const header = page.locator("header");
+  await header.getByRole("button", { name: "Sign in" }).click();
+  const dialog = modal(page);
+  await dialog.getByRole("button", { name: "Create account" }).click();
+  await dialog.getByLabel("Name", { exact: true }).fill("Ada Lovelace");
+  await dialog.getByLabel("Email", { exact: true }).fill(" Ada@Example.com");
+  await settle(page, 400);
+  await shot(page, "account-create");
+  await dialog.getByRole("button", { name: "Email me a code" }).click();
+  await dialog.getByText("We emailed a 6-digit code to").waitFor();
+  const resend = dialog.getByRole("button", { name: /^Resend in \d+ s$/ });
+  x.ok((await resend.getAttribute("aria-disabled")) === "true" || (await resend.isDisabled()), "resend waits a minute");
+  await shot(page, "account-code");
+  await dialog.getByLabel("Code", { exact: true }).fill(await codeFor("ada@example.com"));
+  await dialog.waitFor({ state: "hidden" });
+  const account = header.getByRole("button", { name: "Account: Ada Lovelace" });
+  await account.waitFor();
+  await toastWith(page, "Signed in as Ada Lovelace").waitFor();
+
+  await account.click();
+  const list = modal(page).getByRole("list", { name: "My runs" });
+  await list.getByText("Ready to train").waitFor();
+  const focused = await page.evaluate(() => document.activeElement?.getAttribute("data-slot"));
+  x.ok(focused === "dialog-content", `focus starts on the dialog, not on Sign out: ${focused}`);
+  const items = await list.getByRole("listitem").allInnerTexts();
+  x.ok(items.length === 1 && items[0].includes("insurance.csv"), `the run open at sign-in is saved: ${JSON.stringify(items)}`);
+  await settle(page, 400);
+  await shot(page, "account-runs");
+  await modal(page).getByRole("button", { name: "Sign out" }).click();
+  await header.getByRole("button", { name: "Sign in" }).waitFor();
+  await toastWith(page, "Signed out").waitFor();
+}, { allow: [{ status: 409, url: "/uploads/direct" }] });
+
+test("account: sign in, a wrong code says so, a run opens where it got to", async (page, x) => {
+  await mock("/__mock/account", { email: "grace@example.com", name: "Grace Hopper", runs: ["fresh", "failed", "reg-done"] });
+  await page.goto(APP);
+  const header = page.locator("header");
+  await header.getByRole("button", { name: "Sign in" }).click();
+  const dialog = modal(page);
+  await dialog.getByLabel("Email", { exact: true }).fill("grace@example.com");
+  await dialog.getByLabel("Email", { exact: true }).press("Enter");
+  await dialog.getByText("If grace@example.com has an account").waitFor();
+  const code = await codeFor("grace@example.com");
+  const wrong = String((Number(code) + 1) % 1e6).padStart(6, "0");
+  await dialog.getByLabel("Code", { exact: true }).fill(wrong);
+  await dialog.getByRole("alert").filter({ hasText: "That code isn't right. 4 tries left." }).waitFor();
+  x.ok((await dialog.getByLabel("Code", { exact: true }).getAttribute("aria-invalid")) === "true", "the code field is marked invalid");
+  await shot(page, "account-wrong-code");
+  await dialog.getByLabel("Code", { exact: true }).fill(code);
+  await dialog.waitFor({ state: "hidden" });
+
+  await header.getByRole("button", { name: "Account: Grace Hopper" }).click();
+  const list = modal(page).getByRole("list", { name: "My runs" });
+  await list.getByText("GradientBoostingRegressor").waitFor();
+  const items = await list.getByRole("listitem").allInnerTexts();
+  x.ok(
+    items.length === 3 && /Trained/.test(items[0]) && /R² 87\.35%/.test(items[0]) && /Failed/.test(items[1]) && /Ready to train/.test(items[2]),
+    `runs, newest first: ${JSON.stringify(items)}`
+  );
+  await settle(page, 400);
+  await shot(page, "account-list");
+  await list.getByRole("button", { name: /GradientBoostingRegressor/ }).click();
+  await modal(page).waitFor({ state: "hidden" });
+  await inStage(page, "results").getByText("GradientBoostingRegressor").first().waitFor();
+  x.ok(/run=reg-done/.test(page.url()) && (await stage(page)) === "results", `opens on results: ${page.url()}`);
+}, { allow: [{ status: 400, url: "/auth/verify" }] });
+
+test("account: an address without an account is offered one, and nothing is sent", async (page, x) => {
+  await page.goto(APP);
+  await page.locator("header").getByRole("button", { name: "Sign in" }).click();
+  const dialog = modal(page);
+  await dialog.getByLabel("Email", { exact: true }).fill("new@example.com");
+  await dialog.getByRole("button", { name: "Email me a code" }).click();
+  await dialog.getByText("If new@example.com has an account").waitFor();
+  x.ok((await codeFor("new@example.com")) === null, "no code for an address without an account");
+  await dialog.getByRole("button", { name: "create an account" }).click();
+  await dialog.getByRole("heading", { name: "Create an account" }).waitFor();
+  x.ok((await dialog.getByLabel("Email", { exact: true }).inputValue()) === "new@example.com", "the address is kept");
+  x.ok((await page.evaluate(() => document.activeElement?.getAttribute("autocomplete"))) === "name", "focus moves to the name");
+  await dialog.getByRole("button", { name: "Email me a code" }).click();
+  await dialog.getByRole("alert").filter({ hasText: "Enter your name." }).waitFor();
+});
+
+test("account: no sign-in when the server has no accounts", async (page, x) => {
+  await mock("/__mock/config", { auth: false });
+  await page.goto(APP);
+  await page.locator("header").getByRole("button", { name: "New run" }).waitFor();
+  await settle(page);
+  x.ok(!(await page.locator("header").getByRole("button", { name: "Sign in" }).count()), "no sign-in button");
 });
 
 // ---------- UX states

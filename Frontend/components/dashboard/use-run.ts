@@ -16,6 +16,7 @@ import {
   type RunResult,
   type RunStatus,
 } from "@/lib/api";
+import type { StageKey } from "./dashboard";
 
 const errorText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
 
@@ -28,6 +29,9 @@ export const hasStarted = (s?: RunStatus | null) =>
 /** Training stopped without a result. */
 export const isRunFailed = (s?: RunStatus | null) =>
   (s?.status === "failed" || s?.status === "cancelled") && !isUploadFailed(s);
+/** Where a run opens without a stage in its link: wherever it has got to. */
+export const landingStage = (s: RunStatus): StageKey =>
+  s.status === "succeeded" ? "results" : hasStarted(s) ? "training" : "data";
 
 // The result file is written a moment after the status flips to succeeded, so
 // it is retried for about a minute before the stage reports it missing.

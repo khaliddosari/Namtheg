@@ -90,14 +90,11 @@ export interface RunStatus {
   error?: string;
 }
 
-export type Task = "auto" | "classification" | "regression" | "clustering" | "forecasting" | "image_classification";
+export type Task = "auto" | "classification" | "regression";
 
 export interface StartRunBody {
   task: Task;
   target?: string;
-  date_column?: string;
-  series_id_column?: string;
-  horizon?: number;
 }
 
 export interface ModelScore {
@@ -120,7 +117,34 @@ export interface TuningTrial {
   result: string;
 }
 
+// What the analyst agent understood about the data (Backend/app/agent/analyst.py).
+// "verified" is false when the text cites a number no tool output showed.
+export interface AnalysisResult {
+  status?: string;
+  notes?: string[];
+  summary?: string;
+  findings?: { finding: string; evidence: string; severity: "info" | "warning" | "critical"; verified?: boolean }[];
+  open_questions?: string[];
+  drop_columns?: { column: string; reason: string; evidence: string }[];
+  data_dictionary?: {
+    row_meaning: string;
+    target_meaning: string;
+    columns: { column: string; meaning: string; basis: "data" | "name" | "both"; verified?: boolean }[];
+    relationships: { finding: string; evidence: string; verified?: boolean }[];
+  } | null;
+}
+
+// Tables over 300,000 rows train on one random sample, the same rows the analyst studied.
+export interface SampleInfo {
+  rows_total: number;
+  rows_used: number;
+  sampled: boolean;
+}
+
 export interface ResultExtra {
+  analysis?: AnalysisResult;
+  sample?: SampleInfo;
+  cleaning_applied?: string[];
   train_accuracy?: number;
   train_r2?: number;
   overfit_gap?: number;
@@ -145,7 +169,7 @@ export interface RunResult {
   status: string;
   task?: Task;
   target?: string | null;
-  problem_type?: "regression" | "classification" | "clustering" | "forecasting";
+  problem_type?: "regression" | "classification";
   accuracy_score?: number;
   score_metric?: string;
   higher_is_better?: boolean;
@@ -157,7 +181,7 @@ export interface RunResult {
   downloads?: DownloadKind[];
 }
 
-export type DownloadKind = "cleaned_csv" | "model" | "forecast";
+export type DownloadKind = "cleaned_csv" | "model";
 
 // A plain link: the backend streams the file, or redirects to a short-lived
 // R2 URL when R2 storage is configured.
@@ -330,3 +354,46 @@ export interface Diagnostics {
 }
 
 export const getDiagnostics = (runId: string): Promise<Diagnostics> => request(`/runs/${runId}/diagnostics`);
+
+// Optional accounts (Backend/app/accounts.py): a name and an email, a code by
+// email at every sign-in, no passwords. The session is an HttpOnly cookie on
+// this origin, which the proxy passes through, so nothing here handles tokens.
+export interface Account {
+  name: string;
+  email: string;
+}
+
+export interface AuthState {
+  /** False when the backend has no email set up: no sign-in is offered. */
+  enabled: boolean;
+  user: Account | null;
+}
+
+export interface MyRun {
+  run_id: string;
+  added_at: number; // unix seconds
+  filename?: string | null;
+  status: RunStatus["status"] | "unknown";
+  task?: Task | null;
+  target?: string | null;
+  model_name?: string | null;
+  score?: number | null;
+  score_metric?: string | null;
+}
+
+// Who is signed in depends on the cookie, so these are never served from a cache.
+export const getAuth = (): Promise<AuthState> => request("/auth/me", { cache: "no-store" });
+
+/** Emails a code. With a name it creates the account; without one it signs in. */
+export const requestCode = (body: { email: string; name?: string }): Promise<{ sent: boolean }> =>
+  request("/auth/code", postJson(body));
+
+export const verifyCode = (body: { email: string; code: string }): Promise<{ user: Account }> =>
+  request("/auth/verify", postJson(body));
+
+export const signOut = (): Promise<{ ok: boolean }> => request("/auth/logout", { method: "POST" });
+
+export const getMyRuns = (): Promise<{ runs: MyRun[] }> => request("/auth/runs", { cache: "no-store" });
+
+/** Lists a run under the signed-in account, for one opened before signing in. */
+export const saveRun = (runId: string): Promise<{ ok: boolean }> => request(`/auth/runs/${runId}`, { method: "POST" });

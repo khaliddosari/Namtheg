@@ -4,8 +4,10 @@ Shapes and status codes follow the real API: errors are {"detail": ...}, a
 result that isn't written yet is 409, unknown runs are 404, and diagnostics'
 elapsed_seconds counts from queued_at forever. Seeded run ids cover the
 scenarios (see seeded()); POST /__mock/config switches R2 direct upload, a
-response delay and the way /uploads/{id}/complete behaves (see complete());
-POST /__mock/reset puts everything back.
+response delay, the way /uploads/{id}/complete behaves (see complete()) and
+whether accounts are offered ("auth"); POST /__mock/reset puts everything back.
+Accounts send no email: GET /__mock/last_code?email=... reads the code that
+would have gone out, and POST /__mock/account makes an account with runs.
 
 Run from this folder with any Python that has fastapi and uvicorn, for example
 the backend's virtualenv:
@@ -17,6 +19,7 @@ import csv
 import json
 import random
 import re
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -32,12 +35,38 @@ COLUMNS = list(ROWS[0].keys())
 NUMERIC = {"age", "bmi", "children", "charges"}
 PREVIEW = [{k: (float(v) if k in NUMERIC else v) for k, v in r.items()} for r in ROWS[:20]]
 PREVIEW[3]["bmi"] = None
-IMG_COLUMNS = ["image", "label", "width", "height"]
-IMG_PREVIEW = [{"image": f"{c}/{c}_{i:03d}.jpg", "label": c, "width": 224, "height": 224} for i in range(10) for c in ("cat", "dog")]
+
+# What the analyst agent understood (Backend/app/agent/analyst.py), on regression results.
+ANALYST_EXTRA = {
+    "analysis": {
+        "status": "completed", "code_runs": 4, "seconds": 41.6,
+        "summary": "Smoking status dominates charges; BMI and age add steady increases.",
+        "data_dictionary": {
+            "row_meaning": "One insured person.",
+            "target_meaning": "Yearly medical charges, in US dollars, from 1,121.87 to 63,770.43.",
+            "columns": [
+                {"column": "smoker", "meaning": "Whether the person smokes: yes or no.", "basis": "both", "verified": True},
+                {"column": "bmi", "meaning": "Body mass index, from 15.96 to 53.13.", "basis": "data", "verified": True},
+                {"column": "children", "meaning": "Children covered by the plan, 0 to 5.", "basis": "both", "verified": True},
+                {"column": "region", "meaning": "US region of residence, four values.", "basis": "name", "verified": True},
+            ],
+            "relationships": [{"finding": "Smokers are charged about 3.8 times more.",
+                               "evidence": "mean 32,050.23 vs 8,434.27", "verified": True}],
+            "verified": True,
+        },
+        "findings": [{"finding": "Charges are right-skewed.", "evidence": "skewness 1.52", "severity": "info", "verified": True},
+                     {"finding": "One exact duplicate row.", "evidence": "1 duplicate of 1,338", "severity": "warning",
+                      "verified": True}],
+        "open_questions": ["Are the charges yearly or lifetime totals?"],
+        "drop_columns": [],
+    },
+    "sample": {"rows_total": 1338, "rows_used": 1000, "sampled": True, "stratified": False},
+    "cleaning_applied": ["Treated children as categories, not quantities (6 codes)."],
+}
 
 STAGES = ["starting", "profile", "detect", "audit", "analysis", "eda", "feature_engineering", "train", "visualize", "report", "package"]
 STAGE_SECONDS = 1.2
-DEFAULTS = {"r2": False, "delay": 0, "complete": "ok"}
+DEFAULTS = {"r2": False, "delay": 0, "complete": "ok", "auth": True}
 CONFIG = dict(DEFAULTS)
 UNREADABLE = "Couldn't parse the file: line 12 has 9 fields, expected 7."
 
@@ -65,10 +94,6 @@ def seeded():
         "reading": {"status": "uploading", "filename": "Combined_Flights_2018.csv", "size": 1992289760},
         "reg-done": {**base, "status": "succeeded", "task": "auto", "target": "charges", "stage": "done", "kind": "reg"},
         "clf-done": {**base, "status": "succeeded", "task": "auto", "target": "smoker", "stage": "done", "kind": "clf"},
-        "clu-done": {**base, "status": "succeeded", "task": "clustering", "target": None, "stage": "done", "kind": "clu"},
-        "fc-done": {**base, "status": "succeeded", "task": "forecasting", "target": "charges", "stage": "done", "kind": "fc"},
-        "img-done": {**base, "filename": "pets.zip", "source_format": "images", "status": "succeeded",
-                     "task": "image_classification", "target": "label", "stage": "done", "kind": "img"},
         "bare-done": {**base, "status": "succeeded", "task": "auto", "target": "charges", "stage": "done", "kind": "bare"},
         "running": {**base, "status": "running", "task": "auto", "target": "charges", "stage": "train", "frozen": True},
         "queued": {**base, "status": "queued", "task": "auto", "target": "charges", "frozen": True},
@@ -135,21 +160,22 @@ def reset():
             del deployments[k]
     CONFIG.clear()
     CONFIG.update(DEFAULTS)
+    accounts.clear()
+    codes.clear()
+    sessions.clear()
     return {"ok": True}
 
 
 # ---- uploads
 def new_run(filename):
     rid = uuid.uuid4().hex[:16]
-    images = filename.lower().endswith(".zip")
-    runs[rid] = {"status": "uploaded", "filename": filename, "source_format": "images" if images else filename.rsplit(".", 1)[-1]}
+    runs[rid] = {"status": "uploaded", "filename": filename, "source_format": filename.rsplit(".", 1)[-1]}
     return rid
 
 
 def upload_response(rid):
     r = runs[rid]
-    cols, prev = (IMG_COLUMNS, IMG_PREVIEW) if r["source_format"] == "images" else (COLUMNS, PREVIEW)
-    return {"run_id": rid, "filename": r["filename"], "columns": cols, "preview": prev[:5], "n_rows": 1338}
+    return {"run_id": rid, "filename": r["filename"], "columns": COLUMNS, "preview": PREVIEW[:5], "n_rows": 1338}
 
 
 @app.post("/uploads/direct")
@@ -161,6 +187,7 @@ async def direct(request: Request):
         return err(413, "File too large. Maximum size is 2 GB.")
     rid = new_run(body["filename"])
     runs[rid].update(status="uploading", size=body.get("size"))
+    link(request, rid)
     return {"run_id": rid, "method": "PUT", "upload_url": f"{request.base_url}__r2/{rid}", "expires_in": 3600}
 
 
@@ -215,7 +242,9 @@ async def upload(request: Request):
     raw = await request.body()
     m = re.search(rb'filename="([^"]+)"', raw)
     name = m.group(1).decode() if m else "dataset.csv"
-    return upload_response(new_run(name))
+    rid = new_run(name)
+    link(request, rid)
+    return upload_response(rid)
 
 
 # ---- runs
@@ -229,8 +258,7 @@ def preview(rid: str):
     r = get_run(rid)
     if not r:
         return err(404, "run_id not found")
-    cols, prev = (IMG_COLUMNS, IMG_PREVIEW) if r.get("source_format") == "images" else (COLUMNS, PREVIEW)
-    return {"run_id": rid, "filename": r.get("filename"), "source_format": r.get("source_format"), "n_columns": len(cols), "columns": cols, "preview": prev}
+    return {"run_id": rid, "filename": r.get("filename"), "source_format": r.get("source_format"), "n_columns": len(COLUMNS), "columns": COLUMNS, "preview": PREVIEW}
 
 
 @app.get("/runs/{rid}/status")
@@ -249,15 +277,15 @@ async def start(rid: str, request: Request):
     body = await request.json()
     task = body.get("task", "auto")
     target = body.get("target")
-    if task == "forecasting" and not body.get("date_column"):
-        return err(400, "Forecasting needs a date column.")
-    if task in ("auto", "classification", "regression", "forecasting") and target not in (COLUMNS if r.get("source_format") != "images" else IMG_COLUMNS):
+    if not target:
+        return err(400, "Choose the target column.")
+    if target not in COLUMNS:
         return err(400, f"Target column {target!r} is not in the dataset.")
-    kind = {"clustering": "clu", "forecasting": "fc", "image_classification": "img"}.get(task) or ("reg" if target in NUMERIC else "clf")
-    r.update(status="queued", task=task, target=target if task != "clustering" else None, queued_at=time.time(),
-             started_at=time.time() + 1.5, kind=kind)
+    kind = "reg" if target in NUMERIC else "clf"
+    r.update(status="queued", task=task, target=target, queued_at=time.time(), started_at=time.time() + 1.5, kind=kind)
     r.pop("stage", None)
     r.pop("error", None)
+    link(request, rid)
     return {"run_id": rid, "status": "queued", "task": task, "target": r["target"]}
 
 
@@ -315,30 +343,13 @@ def result_for(rid, r):
                 "downloads": ["cleaned_csv", "model"],
                 "extra": {"train_score": 0.9046, "test_score": 0.8691, "overfit_gap": 0.031, "hardware": {"gpu": "NVIDIA H200"},
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats,
-                          "tuning_trials": trials_for("r2", False)}}
+                          "tuning_trials": trials_for("r2", False), **ANALYST_EXTRA}}
     if kind == "clf":
         models = [("LGBMClassifier", 0.9612, 0.0081), ("XGBClassifier", 0.9577, 0.0093), ("RandomForestClassifier", 0.9533, 0.0102), ("LogisticRegression", 0.9401, 0.0110)]
         return {**common, "problem_type": "classification", "accuracy_score": 0.9612, "score_metric": "accuracy", "higher_is_better": True,
                 "model_name": models[0][0], "justification": just.format(m=models[0][0], s="accuracy (0.961)"), "downloads": ["model"],
                 "extra": {"train_score": 0.9987, "test_score": 0.8211, "overfit_gap": 0.1776, "n_classes": 2,
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats[:5]}}
-    if kind == "clu":
-        models = [("KMeans (k=4)", 0.4121, 0.0), ("HDBSCAN", 0.3877, 0.0), ("Spectral (k=4)", 0.3512, 0.0), ("DBSCAN", 0.2140, 0.0)]
-        return {**common, "problem_type": "clustering", "accuracy_score": 0.4121, "score_metric": "silhouette", "higher_is_better": True,
-                "model_name": models[0][0], "justification": "KMeans with four clusters separated the rows most cleanly (silhouette 0.41).",
-                "downloads": ["cleaned_csv"], "extra": {"all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models]}}
-    if kind == "fc":
-        models = [("AutoETS", 0.9731, 0.0412), ("AutoARIMA", 1.0442, 0.0520), ("SeasonalNaive", 1.1820, 0.0611), ("LightGBM (lags)", 1.0993, 0.0588)]
-        return {**common, "problem_type": "forecasting", "accuracy_score": 0.9731, "score_metric": "mase", "higher_is_better": False,
-                "model_name": models[0][0], "justification": "AutoETS had the lowest backtest MASE, beating the seasonal naive baseline.",
-                "downloads": ["forecast", "model"],
-                "extra": {"train_score": 0.8812, "test_score": 0.9731, "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models],
-                          "tuning_trials": trials_for("mase", True)}}
-    if kind == "img":
-        models = [("convnext_tiny", 0.9420, 0.0110), ("resnet50", 0.9310, 0.0132), ("efficientnet_b0", 0.9255, 0.0140)]
-        return {**common, "problem_type": "classification", "accuracy_score": 0.942, "score_metric": "accuracy", "higher_is_better": True,
-                "model_name": models[0][0], "justification": "convnext_tiny fine-tuned best on the held-out images.", "downloads": ["model"],
-                "extra": {"all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models]}}
     if kind == "bare":
         return {**common, "problem_type": "regression", "accuracy_score": 0.7123, "score_metric": "r2", "model_name": "Ridge"}
     return None
@@ -358,7 +369,7 @@ def plot(rid: str):
     r = get_run(rid)
     if not r:
         return err(404, "run_id not found")
-    if r.get("kind") in ("img", "bare") or r["status"] != "succeeded":
+    if r.get("kind") == "bare" or r["status"] != "succeeded":
         return err(404, "Plot not yet generated.")
     random.seed(4)
     pts = "".join(
@@ -384,11 +395,6 @@ def schema(rid: str):
     if r["status"] != "succeeded" or r.get("noschema") or r.get("kind") == "none":
         return err(409, "No trained model - finish a successful run first.")
     kind = r["kind"]
-    if kind == "img":
-        return {"run_id": rid, "task": "image_classification", "model_name": "convnext_tiny", "problem_type": "classification",
-                "feature_cols": [], "class_labels": ["cat", "dog"], "sample": {}}
-    if kind == "fc":
-        return {"run_id": rid, "task": "forecasting", "model_name": "AutoETS", "problem_type": "forecasting", "feature_cols": [], "sample": {}}
     target = r.get("target") or "charges"
     feats = [c for c in COLUMNS if c != target]
     clf = kind == "clf"
@@ -446,3 +452,128 @@ async def predict(rid: str, request: Request):
         return {"predictions": [1 if p[1] > 0.5 else 0 for p in probs], "predicted_labels": ["yes" if p[1] > 0.5 else "no" for p in probs],
                 "probabilities": probs, "class_labels": ["no", "yes"], "model": "LGBMClassifier"}
     return {"predictions": [round(16884.9241 + 731.2 * i, 4) for i in range(len(rows))], "model": "GradientBoostingRegressor"}
+
+
+# ---- accounts (Backend/app/accounts.py): a code by email at every sign-in, a session cookie
+COOKIE = "namtheg_session"
+EMAIL = re.compile(r"[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}")
+OFF = "Accounts are not enabled on this server."
+accounts: dict[str, dict] = {}  # email -> {"name", "email", "runs": [[run_id, added_at], ...]}
+codes: dict[str, dict] = {}  # email -> the pending code and its tries
+sessions: dict[str, str] = {}  # cookie value -> email
+
+
+def signed_in(request):
+    return accounts.get(sessions.get(request.cookies.get(COOKIE, ""), ""))
+
+
+def link(request, rid):
+    """As the backend does on upload and start: the run goes to the top of the signed-in user's runs."""
+    user = signed_in(request) if CONFIG["auth"] else None
+    if user:
+        user["runs"] = [r for r in user["runs"] if r[0] != rid] + [[rid, time.time()]]
+
+
+def account_json(user):
+    return {"name": user["name"], "email": user["email"]}
+
+
+@app.post("/__mock/account")
+async def make_account(request: Request):
+    body = await request.json()
+    accounts[body["email"]] = {"name": body["name"], "email": body["email"],
+                               "runs": [[rid, time.time() - 3600 * (len(body["runs"]) - i)] for i, rid in enumerate(body.get("runs", []))]}
+    return {"ok": True}
+
+
+@app.get("/__mock/last_code")
+def last_code(email: str):
+    pending = codes.get(email.strip().lower())
+    return {"code": pending["code"] if pending else None}
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    user = signed_in(request) if CONFIG["auth"] else None
+    return {"enabled": CONFIG["auth"], "user": account_json(user) if user else None}
+
+
+@app.post("/auth/code")
+async def auth_code(request: Request):
+    if not CONFIG["auth"]:
+        return err(404, OFF)
+    body = await request.json()
+    email = str(body.get("email") or "").strip().lower()
+    name = " ".join(str(body.get("name") or "").split())
+    if len(email) > 254 or not EMAIL.fullmatch(email):
+        return err(400, "Enter a valid email address.")
+    if email not in accounts and not name:
+        return {"sent": True}  # nothing is sent, and the answer doesn't say so
+    pending, wait = codes.get(email), CONFIG.get("resend_seconds", 60)
+    if pending and time.time() - pending["sent_at"] < wait:
+        return err(429, f"A code was just sent. You can ask for another in {int(wait - (time.time() - pending['sent_at'])) + 1} seconds.")
+    codes[email] = {"code": f"{secrets.randbelow(10 ** 6):06d}", "tries": 0, "sent_at": time.time(),
+                    "signup_name": None if email in accounts else name[:80]}
+    return {"sent": True}
+
+
+@app.post("/auth/verify")
+async def auth_verify(request: Request):
+    if not CONFIG["auth"]:
+        return err(404, OFF)
+    body = await request.json()
+    email = str(body.get("email") or "").strip().lower()
+    pending = codes.get(email)
+    if not pending or pending["tries"] >= 5:
+        return err(400, "That code has expired. Ask for a new one.")
+    if re.sub(r"\D", "", str(body.get("code") or "")) != pending["code"]:
+        pending["tries"] += 1
+        left = 5 - pending["tries"]
+        return err(400, f"That code isn't right. {left} {'try' if left == 1 else 'tries'} left." if left
+                   else "That code isn't right, and that was the last try. Ask for a new one.")
+    del codes[email]
+    user = accounts.setdefault(email, {"name": pending["signup_name"] or email.split("@")[0], "email": email, "runs": []})
+    token = uuid.uuid4().hex
+    sessions[token] = email
+    response = JSONResponse({"user": account_json(user)})
+    response.set_cookie(COOKIE, token, max_age=30 * 24 * 3600, httponly=True, samesite="lax", path="/")
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    sessions.pop(request.cookies.get(COOKIE, ""), None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(COOKIE, path="/")
+    return response
+
+
+@app.get("/auth/runs")
+def auth_runs(request: Request):
+    if not CONFIG["auth"]:
+        return err(404, OFF)
+    user = signed_in(request)
+    if not user:
+        return err(401, "Sign in to see your runs.")
+    out = []
+    for rid, added_at in reversed(user["runs"]):
+        r = get_run(rid)
+        if not r:
+            continue
+        res = result_for(rid, r) if r["status"] == "succeeded" else None
+        out.append({"run_id": rid, "added_at": added_at, "filename": r.get("filename"), "status": r["status"],
+                    "task": r.get("task"), "target": r.get("target"), "model_name": res["model_name"] if res else None,
+                    "score": res["accuracy_score"] if res else None, "score_metric": res["score_metric"] if res else None})
+    return {"runs": out}
+
+
+@app.post("/auth/runs/{rid}")
+def auth_save_run(rid: str, request: Request):
+    if not CONFIG["auth"]:
+        return err(404, OFF)
+    if not signed_in(request):
+        return err(401, "Sign in to save runs.")
+    if not get_run(rid):
+        return err(404, "run_id not found")
+    link(request, rid)
+    return {"ok": True}

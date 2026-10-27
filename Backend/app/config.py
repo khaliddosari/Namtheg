@@ -49,6 +49,20 @@ class Settings(BaseSettings):
     r2_prefix: str = ""
     r2_url_ttl_seconds: int = 900
 
+    # Optional accounts (app/accounts.py): a name and an email, a code by email
+    # at every sign-in and sign-up, no passwords. Off unless AUTH_SECRET is set
+    # and email can be sent: SMTP below (any provider), or, on a local machine
+    # only, AUTH_DEV_LOG_CODES=true, which writes codes to the server log.
+    auth_secret: str = ""
+    auth_dev_log_codes: bool = False
+    # Every code is an email; this caps them per day to protect the sender's quota.
+    auth_max_codes_per_day: int = 100
+    smtp_host: str = ""
+    smtp_port: int = 587  # 465 means implicit TLS; anything else uses STARTTLS
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""  # e.g. "Namtheg <login@namtheg.khalid-ai.dev>"
+
     storage_dir: Path = Path("/storage" if Path("/storage").is_dir() else "./storage")
     log_level: str = "INFO"
 

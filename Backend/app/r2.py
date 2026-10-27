@@ -52,31 +52,44 @@ def _is_missing(error: Exception) -> bool:
     return code in ("404", "NoSuchKey", "NotFound")
 
 
+def account_key(name: str) -> str:
+    """Account records (app/accounts.py) live beside the runs, under accounts/."""
+    return f"{settings.r2_prefix}accounts/{name}"
+
+
 def upload(path: Path, run_id: str, name: str) -> bool:
+    return upload_key(path, object_key(run_id, name))
+
+
+def upload_key(path: Path, key: str) -> bool:
     if not enabled():
         return False
     try:
-        _s3().upload_file(str(path), settings.r2_bucket, object_key(run_id, name))
+        _s3().upload_file(str(path), settings.r2_bucket, key)
         return True
     except Exception as e:
-        # The local copy is still intact; don't fail the run over the mirror.
-        log.warning("R2 upload of %s/%s failed: %s", run_id, name, e)
+        # The local copy is still intact; don't fail the caller over the mirror.
+        log.warning("R2 upload of %s failed: %s", key, e)
         return False
 
 
 def download(run_id: str, name: str, dest: Path) -> bool:
     """Fetch an object into `dest`. False if R2 is off or the object is absent."""
+    return download_key(object_key(run_id, name), dest)
+
+
+def download_key(key: str, dest: Path) -> bool:
     if not enabled():
         return False
     tmp = dest.with_name(dest.name + ".r2tmp")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        _s3().download_file(settings.r2_bucket, object_key(run_id, name), str(tmp))
+        _s3().download_file(settings.r2_bucket, key, str(tmp))
         tmp.replace(dest)
         return True
     except Exception as e:
         if not _is_missing(e):
-            log.warning("R2 download of %s/%s failed: %s", run_id, name, e)
+            log.warning("R2 download of %s failed: %s", key, e)
         tmp.unlink(missing_ok=True)
         return False
 

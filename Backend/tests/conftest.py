@@ -1,9 +1,7 @@
-import hashlib
 import json
 import shutil
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from app.config import settings
@@ -16,69 +14,44 @@ INSURANCE_CSV = REPO_ROOT / "insurance.csv"
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path, monkeypatch):
     """Every test gets its own storage dir, the local sandbox, no real LLM keys,
-    and R2 off."""
+    R2 off, and accounts off with no way to send email."""
     monkeypatch.setattr(settings, "storage_dir", tmp_path / "storage")
     settings.storage_dir.mkdir()
     monkeypatch.setattr(settings, "sandbox_backend", "local")
     monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr(settings, "openrouter_api_key", "")
     monkeypatch.setattr(settings, "r2_bucket", "")
+    monkeypatch.setattr(settings, "auth_secret", "")
+    monkeypatch.setattr(settings, "auth_dev_log_codes", False)
+    monkeypatch.setattr(settings, "smtp_host", "")
     yield
-
-
-def fake_encode_text(values, encoder_name, batch_size=128):
-    """Deterministic stand-in for the pretrained sentence encoder: hashed bag
-    of words, unit-normalised. Same text -> same vector, like the real one."""
-    out = np.zeros((len(values), 64), dtype=np.float32)
-    for i, v in enumerate(values):
-        for word in str("" if v is None else v).lower().split():
-            out[i, int(hashlib.md5(word.encode()).hexdigest(), 16) % 64] += 1.0
-    norms = np.linalg.norm(out, axis=1, keepdims=True)
-    return out / np.where(norms > 0, norms, 1)
 
 
 @pytest.fixture(autouse=True)
 def cpu_training_harness(monkeypatch):
-    """Tests can't reach the GPU service, so its two seams run the same engines
+    """Tests can't reach the GPU service, so its one seam runs the same engines
     in-process on CPU, with small models. Production has no such path:
-    train._gpu_map / _gpu_call only talk to the GPU service."""
+    train._gpu_map only talks to the GPU service."""
     from app.pipeline import train
-    from app.training import forecasting, runtime, tabular, text, vision
+    from app.training import tabular
 
     monkeypatch.setattr(tabular, "MAX_TREES", 80)
     monkeypatch.setattr(tabular, "EARLY_STOPPING_ROUNDS", 10)
     monkeypatch.setattr(settings, "tuning_trials", 2)
-    monkeypatch.setattr(forecasting, "MAX_EPOCHS", 3)
-    monkeypatch.setattr(forecasting, "CANDIDATES", ("LSTM", "TCN", "XGBoost (lags)"))
-    monkeypatch.setattr(vision, "CANDIDATES", {"ResNet-18 (test)": "resnet18"})
-    monkeypatch.setattr(vision, "PRETRAINED", False)
-    monkeypatch.setattr(vision, "MAX_EPOCHS", 2)
-    monkeypatch.setattr(runtime, "encode_text", fake_encode_text)
-    monkeypatch.setattr(text, "encode_text", fake_encode_text)
 
     def run_locally(function, data, specs, run_id):
-        from app.training import clustering
-
+        assert function == "train_classic"
         results = []
         for spec in specs:
-            if function == "train_classic":
-                engine = clustering if spec["task"] == "clustering" else tabular
-            else:
-                engine = forecasting if spec["task"] == "forecasting" else vision
             try:
-                out = engine.run(data, spec, "cpu")
+                out = tabular.run(data, spec, "cpu")
                 out["hardware"] = {"gpu": "CPU test harness", "requested": "H200"}
                 results.append(out)
             except Exception as e:
                 results.append(e)
         return results
 
-    def call_locally(function, *args):
-        assert function == "embed_text"
-        return text.embed_columns(*args)
-
     monkeypatch.setattr(train, "_gpu_map", run_locally)
-    monkeypatch.setattr(train, "_gpu_call", call_locally)
     yield
 
 
