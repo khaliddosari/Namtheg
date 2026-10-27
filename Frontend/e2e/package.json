@@ -1,0 +1,20 @@
+{
+  "name": "namtheg-frontend-e2e",
+  "private": true,
+  "description": "End-to-end, layout and accessibility checks for the Namtheg dashboard, run against a mock backend.",
+  "scripts": {
+    "install-browser": "playwright-core install chromium",
+    "mock": "python -m uvicorn mock_backend:app --port 8001 --log-level warning",
+    "build": "node app.js build",
+    "serve": "node app.js serve",
+    "clean": "node app.js clean",
+    "test": "node suite.js",
+    "layout": "node layout.js",
+    "a11y": "node a11y.js",
+    "check": "node suite.js && node layout.js && node a11y.js"
+  },
+  "devDependencies": {
+    "axe-core": "^4.13.0",
+    "playwright-core": "^1.63.0"
+  }
+}
