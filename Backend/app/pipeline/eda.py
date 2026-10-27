@@ -1,10 +1,12 @@
+import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
 from app import storage
 
 
-def run_eda(run_id: str, target: str) -> dict:
-    df = storage.load_dataset(run_id)
+def run_eda(run_id: str, target: str, df: pd.DataFrame | None = None) -> dict:
+    """`df`: the run's working set (app/pipeline/sampling.py), when the caller holds it."""
+    df = storage.load_dataset(run_id) if df is None else df
     if target not in df.columns:
         raise ValueError(f"Target column '{target}' not found.")
 

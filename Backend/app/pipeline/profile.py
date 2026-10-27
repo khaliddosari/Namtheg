@@ -1,8 +1,11 @@
+import pandas as pd
+
 from app import storage
 
 
-def profile_dataset(run_id: str) -> dict:
-    df = storage.load_dataset(run_id)
+def profile_dataset(run_id: str, df: pd.DataFrame | None = None) -> dict:
+    """`df`: the full table, when the caller already holds it."""
+    df = storage.load_dataset(run_id) if df is None else df
     columns = []
     for col in df.columns:
         s = df[col]

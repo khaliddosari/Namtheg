@@ -394,7 +394,9 @@ def _skip_reason(name: str, n_train: int) -> str | None:
 
 def run(data: bytes, spec: dict, device: str) -> dict:
     """spec: {"task", "target", "candidates": [...], "plan": {"imbalance",
-    "tuning_trials", "tuning_timeout_seconds", "text", "raw_feature_cols"}}"""
+    "tuning_trials", "tuning_timeout_seconds", "input_cols", "cleaning"}}.
+    input_cols and cleaning (both optional) are the raw columns a prediction
+    takes and how runtime.prepare turns them into this frame's columns."""
     started = time.monotonic()
     task, target, plan = spec["task"], spec["target"], spec.get("plan", {})
     df = pd.read_parquet(io.BytesIO(data))
@@ -480,8 +482,9 @@ def run(data: bytes, spec: dict, device: str) -> dict:
     buf = io.BytesIO()
     joblib.dump({
         "format": BUNDLE_FORMAT, "task": task, "problem_type": task, "model_name": best,
-        "feature_cols": plan.get("raw_feature_cols") or X.columns.tolist(),
-        "class_labels": class_labels, "preprocessor": final[0], "estimator": est_spec, "text": plan.get("text"),
+        "feature_cols": plan.get("input_cols") or X.columns.tolist(), "model_cols": X.columns.tolist(),
+        "cleaning": plan.get("cleaning"),
+        "class_labels": class_labels, "preprocessor": final[0], "estimator": est_spec,
     }, buf)
 
     result.update({
@@ -496,7 +499,8 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         "test_score": score(metric, y_test, test_pred),
         "n_classes": n_classes or None,
         "class_labels": class_labels,
-        "feature_cols": plan.get("raw_feature_cols") or X.columns.tolist(),
+        "feature_cols": plan.get("input_cols") or X.columns.tolist(),
+        "model_cols": X.columns.tolist(),
         "top_features": feature_importances(final),
         "preprocessing": describe_preprocessor(final[0]),
         "y_test": y_test.tolist(),

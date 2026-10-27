@@ -116,6 +116,11 @@ def load_dataset(run_id: str) -> pd.DataFrame:
     return pd.read_parquet(dataset_path(run_id))
 
 
+def load_columns(run_id: str, columns: list[str]) -> pd.DataFrame:
+    """Only these columns of the dataset: far cheaper than load_dataset on a big table."""
+    return pd.read_parquet(dataset_path(run_id), columns=columns)
+
+
 def dataset_columns(run_id: str) -> list[str]:
     return pq.read_schema(dataset_path(run_id)).names
 

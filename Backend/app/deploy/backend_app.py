@@ -62,8 +62,11 @@ def fastapi_app():
     image=image,
     volumes={"/storage": storage_volume},
     secrets=[secret],
-    cpu=2.0,
-    memory=4096,
+    # 8 cores read the table and run the audit faster. The full table is held
+    # in memory until the analysis ends, then only the working set (at most
+    # 300,000 rows); 8 GB keeps a multi-million-row table safe meanwhile.
+    cpu=8.0,
+    memory=8192,
     timeout=JOB_TIMEOUT_SECONDS,
     retries=0,
 )

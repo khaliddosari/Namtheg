@@ -28,27 +28,13 @@ import { Fact, Meter, Panel, PanelEmpty, PanelError, PanelSkeleton } from "@/com
 import { Segmented } from "@/components/segmented";
 import { isRunFailed, type RunState } from "./use-run";
 import { exportReportPdf, exportReportPng } from "./report-export";
+import { AnalysisDialog, hasAnalysis } from "./analysis-dialog";
+import { formatScore, metricInfo } from "./metrics";
 import type { StageKey } from "./dashboard";
-
-// Selection metrics the trainer can report (imbalanced targets use macro F1).
-// percent: shown as a percentage; otherwise a plain number (MASE and silhouette
-// are not proportions). lowerIsBetter flips ranking and wording.
-const METRICS: Record<string, { short: string; long: string; percent: boolean; lowerIsBetter?: boolean }> = {
-  accuracy: { short: "Accuracy", long: "Cross-validation accuracy", percent: true },
-  f1_macro: { short: "Macro F1", long: "Cross-validation macro F1", percent: true },
-  r2: { short: "R²", long: "R² regression score", percent: true },
-  silhouette: { short: "Silhouette", long: "Cluster silhouette (-1 to 1)", percent: false },
-  mase: { short: "MASE", long: "Backtest MASE (lower is better)", percent: false, lowerIsBetter: true },
-};
-const metricInfo = (metric: string) => METRICS[metric] ?? { short: metric, long: metric, percent: false };
-const formatScore = (value: number, metric: string, digits = 2) =>
-  metricInfo(metric).percent ? `${(value * 100).toFixed(digits)}%` : value.toFixed(4);
 
 const PLOT_TITLES: Record<string, { title: string; caption: string }> = {
   classification: { title: "Confusion matrix", caption: "Diagonal cells are correct predictions." },
   regression: { title: "Predicted vs actual", caption: "Points close to the diagonal are accurate predictions." },
-  clustering: { title: "Cluster map", caption: "Each point is a row, coloured by its cluster." },
-  forecasting: { title: "Forecast", caption: "History, backtest and the projected horizon." },
 };
 
 export function ResultsStage({
@@ -129,6 +115,8 @@ function ChampionPanel({
   goToStage: (key: StageKey) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const analysisShown = !!result && hasAnalysis(result);
   const modelName = result?.model_name ?? "Best model";
   const facts = [result?.problem_type, result?.extra?.hardware?.gpu].filter(Boolean).join(" · ");
 
@@ -157,9 +145,6 @@ function ChampionPanel({
               <p className="text-sm leading-relaxed text-muted-foreground lock:line-clamp-2 lock-short:line-clamp-1">
                 {formatArabicBrand(result.justification)}
               </p>
-              <Button variant="link" size="sm" onClick={() => setOpen(true)} className="hidden h-auto self-start px-0 lock:inline-flex" data-export-ignore>
-                Read the full rationale
-              </Button>
               <Dialog open={open} onOpenChange={setOpen}>
                 <DialogContent className="sm:max-w-xl">
                   <DialogHeader>
@@ -172,6 +157,22 @@ function ChampionPanel({
               </Dialog>
             </>
           )}
+          {(result.justification || analysisShown) && (
+            // On locked pages the clamped rationale needs its own link; the analysis always does.
+            <div className={cn("flex-wrap items-center gap-x-4 gap-y-1", analysisShown ? "flex" : "hidden lock:flex")} data-export-ignore>
+              {result.justification && (
+                <Button variant="link" size="sm" onClick={() => setOpen(true)} className="hidden h-auto px-0 lock:inline-flex">
+                  Read the full rationale
+                </Button>
+              )}
+              {analysisShown && (
+                <Button variant="link" size="sm" onClick={() => setAnalysisOpen(true)} className="h-auto px-0">
+                  What the analyst found
+                </Button>
+              )}
+            </div>
+          )}
+          {analysisShown && <AnalysisDialog result={result} open={analysisOpen} onOpenChange={setAnalysisOpen} />}
         </>
       ) : resultError ? (
         <PanelError title="The results didn't load" message={resultError} onRetry={onRetry} />
@@ -298,12 +299,6 @@ function FilesPanel({
               <a href={downloadUrl(runId, "cleaned_csv")} className={fileLink}>
                 <Table2 data-icon="inline-start" />
                 Cleaned CSV
-              </a>
-            )}
-            {downloads.includes("forecast") && (
-              <a href={downloadUrl(runId, "forecast")} className={fileLink}>
-                <Table2 data-icon="inline-start" />
-                Forecast CSV
               </a>
             )}
             {downloads.includes("model") && (

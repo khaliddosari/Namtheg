@@ -1,14 +1,16 @@
+import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype, is_timedelta64_dtype
 
 from app import storage
+from app.training.runtime import is_code, prepare
 
 
 HIGH_MISSING_THRESHOLD = 0.5
 ONE_HOT_MAX_CARDINALITY = 10
 
 
-def feature_engineer(run_id: str, target: str | None, extra_drops: list[dict] | None = None,
-                     text_columns: list[str] | None = None) -> dict:
+def feature_engineer(run_id: str, target: str, extra_drops: list[dict] | None = None,
+                     df: pd.DataFrame | None = None, cleaning: dict | None = None) -> dict:
     """Filter columns/rows and emit a ready-but-unencoded engineered dataset.
 
     Structural decisions live here (drop high-missing columns, drop id-like
@@ -18,58 +20,79 @@ def feature_engineer(run_id: str, target: str | None, extra_drops: list[dict] | 
     lets the deployed Modal endpoint accept raw inputs (the Pipeline encodes
     them internally before predicting).
 
-    `target` is None for clustering. `extra_drops` are the analyst agent's
-    validated decisions ({"column", "reason"}), applied before the default
-    rules. `text_columns` hold free text: they are mostly unique like
-    identifiers, but they will be embedded, so they are kept.
+    `extra_drops` are the analyst agent's validated decisions ({"column",
+    "reason"}), applied before the default rules. `cleaning` is its validated
+    cleaning (analyst.cleaning_spec): label merges change the target; the rest
+    goes through runtime.prepare, the same function the model runs on every
+    input at prediction time, so the cleaning that survives the rules below is
+    recorded for the model bundle. `df` is the run's working set
+    (app/pipeline/sampling.py) when the caller already holds it.
     """
-    df = storage.load_dataset(run_id)
-    if target is not None and target not in df.columns:
+    df = (storage.load_dataset(run_id) if df is None else df).copy()
+    if target not in df.columns:
         raise ValueError(f"Target column '{target}' not found.")
-    text_columns = [c for c in (text_columns or []) if c in df.columns]
+    cleaning = cleaning or {}
 
     dropped: list[str] = []
     planned_encodings: list[str] = []
+    applied: list[str] = []
 
     # 0. Columns the analyst agent showed must not reach the model.
     for d in extra_drops or []:
         if d["column"] in df.columns and d["column"] != target:
             df = df.drop(columns=[d["column"]])
             dropped.append(f"{d['column']} ({d['reason'].replace('_', ' ')}, per analysis)")
-    text_columns = [c for c in text_columns if c in df.columns]
 
-    # 1. Drop columns with too many missing values (excluding target).
+    # 1. The analyst's cleaning, before the rules below judge the columns: a
+    # column that is mostly "-999" is mostly missing.
+    for merge in cleaning.get("label_merges") or []:
+        values = list(df[target].dropna().unique())
+        into = next((v for v in values if str(v).strip() == merge["into"]), None)
+        variants = [v for v in values if str(v).strip() in merge["labels"] and v != into]
+        if into is None or not variants:
+            continue
+        n = int(df[target].isin(variants).sum())
+        df[target] = df[target].replace({v: into for v in variants})
+        applied.append(f"Merged the target labels {', '.join(map(str, variants))} into {into} ({n} rows).")
+    feature_cleaning = {
+        "missing_codes": {c: v for c, v in (cleaning.get("missing_codes") or {}).items() if c in df and c != target},
+        "categorical": [c for c in cleaning.get("categorical") or [] if c in df and c != target],
+        "date_parts": {c: p for c, p in (cleaning.get("date_parts") or {}).items() if c in df and c != target},
+    }
+    for col, codes in feature_cleaning["missing_codes"].items():
+        n = int(is_code(df[col], codes).sum())
+        applied.append(f"Treated {', '.join(map(str, codes))} in {col} as missing ({n} values).")
+    for col in feature_cleaning["categorical"]:
+        applied.append(f"Treated {col} as categories, not quantities ({df[col].nunique(dropna=True)} codes).")
+    for col, parts in feature_cleaning["date_parts"].items():
+        applied.append(f"Turned {col} into {', '.join(p.replace('_', ' ') for p in parts)}.")
+    if any(feature_cleaning.values()):
+        df = prepare(df.drop(columns=[target]), feature_cleaning).assign(**{target: df[target]})
+
+    # 2. Drop columns with too many missing values (excluding target).
     for c in list(df.columns):
         if c == target:
             continue
         if df[c].isna().mean() > HIGH_MISSING_THRESHOLD:
             df = df.drop(columns=[c])
             dropped.append(f"{c} (>{int(HIGH_MISSING_THRESHOLD*100)}% missing)")
-    text_columns = [c for c in text_columns if c in df.columns]
 
-    # 2. Drop rows where target is missing (must precede ID-like check so n is correct).
-    if target is not None:
-        df = df.dropna(subset=[target]).reset_index(drop=True)
+    # 3. Drop rows where target is missing (must precede ID-like check so n is correct).
+    df = df.dropna(subset=[target]).reset_index(drop=True)
     n = len(df)
 
-    # 3. Drop datetime columns. The encoders can't take raw timestamps, and
-    # turning them into features safely needs a time-aware split (the audit
-    # flags them). Custom transforms can't go in the pickled pipeline either:
-    # the inference image couldn't load them.
+    # 4. Drop the remaining datetime columns. The encoders can't take raw
+    # timestamps; a date only becomes features when the analyst asked for its
+    # calendar parts (step 1).
     for c in list(df.columns):
         if c != target and (is_datetime64_any_dtype(df[c]) or is_timedelta64_dtype(df[c])):
             df = df.drop(columns=[c])
-            dropped.append(f"{c} (date/time; not used as a feature yet)")
+            dropped.append(f"{c} (date/time; not turned into features)")
 
-    # 4. Drop ID-like columns (>=95% unique values) and, for clustering,
-    # constant ones. Numeric dtypes are exempt from the ID rule: continuous
-    # floats on small datasets naturally hit ~100% uniqueness.
+    # 5. Drop ID-like columns (>=95% unique values). Numeric dtypes are exempt:
+    # continuous floats on small datasets naturally hit ~100% uniqueness.
     for c in list(df.columns):
-        if c == target or c in text_columns:
-            continue
-        if target is None and df[c].nunique(dropna=True) <= 1:
-            df = df.drop(columns=[c])
-            dropped.append(f"{c} (constant; no information for clustering)")
+        if c == target:
             continue
         if is_numeric_dtype(df[c]):
             continue
@@ -77,13 +100,10 @@ def feature_engineer(run_id: str, target: str | None, extra_drops: list[dict] | 
             df = df.drop(columns=[c])
             dropped.append(f"{c} (id-like)")
 
-    # 5. Record the encoding plan. The actual encoders are fit by the GPU
+    # 6. Record the encoding plan. The actual encoders are fit by the GPU
     # trainer inside each CV fold - see app/training/tabular.py:build_preprocessor.
     for c in df.columns:
         if c == target or is_numeric_dtype(df[c]):
-            continue
-        if c in text_columns:
-            planned_encodings.append(f"{c} (free text; will be embedded with a pretrained encoder)")
             continue
         cardinality = df[c].nunique(dropna=True)
         if cardinality <= ONE_HOT_MAX_CARDINALITY:
@@ -91,12 +111,26 @@ def feature_engineer(run_id: str, target: str | None, extra_drops: list[dict] | 
         else:
             planned_encodings.append(f"{c} (will be ordinal, {cardinality} levels)")
 
+    # The raw columns a prediction needs: a date part comes from its date column.
+    model_cols = [c for c in df.columns if c != target]
+    source = {f"{c}__{p}": c for c, parts in feature_cleaning["date_parts"].items() for p in parts}
+    input_cols = list(dict.fromkeys(source.get(c, c) for c in model_cols))
+    kept = set(input_cols)
+    kept_cleaning = {
+        "missing_codes": {c: v for c, v in feature_cleaning["missing_codes"].items() if c in kept},
+        "categorical": [c for c in feature_cleaning["categorical"] if c in kept],
+        "date_parts": {c: [p for p in parts if f"{c}__{p}" in model_cols]
+                       for c, parts in feature_cleaning["date_parts"].items() if c in kept},
+    }
+
     storage.save_engineered(run_id, df)
     report = {
         "dropped_columns": dropped,
         "encoded_columns": planned_encodings,
-        "text_columns": text_columns,
-        "final_feature_count": int(df.shape[1] - (1 if target is not None else 0)),
+        "cleaning_applied": applied,
+        "input_columns": input_cols,
+        "cleaning": kept_cleaning if any(kept_cleaning.values()) else None,
+        "final_feature_count": len(model_cols),
         "final_row_count": int(len(df)),
     }
     storage.write_json(run_id, "feature_engineering.json", report)
