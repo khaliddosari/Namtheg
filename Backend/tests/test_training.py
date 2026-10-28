@@ -1,6 +1,7 @@
 """Tabular training engine (app/training/tabular.py), run in-process on CPU as a
 harness, plus the deployment invariants that tie the GPU and inference images together."""
 import io
+import json
 import sys
 import types
 from contextlib import contextmanager
@@ -137,8 +138,55 @@ def test_tuning_stops_once_trials_stop_beating_the_cv_noise():
     # No R2 can beat 0 by more than 1, so every trial is stale.
     _, _, rows = tabular.tune("Linear", X, y, folds, "regression", "cpu", False, 0, "r2",
                               start_score=0.0, n_trials=20, timeout=60, min_gain=1.0)
-    assert len(rows) == 1 + tabular.TUNING_PATIENCE
+    # Patience counts folds, and only after the starting points.
+    searched = [r["folds"] for r in rows[1 + len(tabular.STARTING_POINTS["Linear"]):]]
+    patience = tabular.TUNING_PATIENCE * len(folds)
+    assert sum(searched[:-1]) < patience <= sum(searched)
+    assert not any("best third" in r["result"] for r in rows)  # folds this small wait for the median
     assert tabular.cv_noise([0.8, 0.9]) == pytest.approx(0.05 / np.sqrt(2))
+
+
+def test_starting_points_lie_inside_the_search_space():
+    import optuna
+
+    assert tabular.STARTING_POINTS.keys() == tabular.DEFAULT_PARAMS.keys()
+    for name, starts in tabular.STARTING_POINTS.items():
+        trial = optuna.create_study().ask()
+        tabular.search_space(name, trial)
+        space = trial.distributions
+        for params in starts:
+            assert params.keys() == space.keys(), name
+            for key, value in params.items():
+                dist = space[key]
+                if isinstance(dist, optuna.distributions.CategoricalDistribution):
+                    assert value in dist.choices, (name, key, value)
+                else:
+                    assert dist.low <= value <= dist.high, (name, key, value)
+
+
+def test_large_folds_drop_weak_settings_after_one_fold(monkeypatch):
+    # Folds large enough to rank settings on one fold, and instant fake models
+    # whose score depends only on how far their strength is from 0.01.
+    n = tabular.HALVING_MIN_FOLD_ROWS * 6
+    X, y = pd.DataFrame({"x": np.zeros(n)}), np.zeros(n)
+    folds = common.make_folds("regression", y)
+    monkeypatch.setattr(tabular, "fit", lambda name, task, params, *args, **kwargs: (params["strength"], None))
+    monkeypatch.setattr(tabular, "predict", lambda strength, X: strength)
+    monkeypatch.setattr(tabular, "score", lambda metric, y_true, strength: -abs(np.log10(strength / 0.01)))
+    defaults = -2.0  # strength 1
+    _, best, rows = tabular.tune("Linear", X, y, folds, "regression", "cpu", False, 0, "r2",
+                                 start_score=defaults, n_trials=4, timeout=60)
+
+    starts = tabular.STARTING_POINTS["Linear"]
+    assert [json.loads(r["parameters"]) for r in rows[1:1 + len(starts)]] == starts
+    assert all(r["result"].endswith("(starting point)") for r in rows[1:1 + len(starts)])
+    # The first starting point (0.01) leads, so the next two stop after one fold.
+    assert [r["folds"] for r in rows[1:1 + len(starts)]] == [5, 1, 1]
+    assert rows[2]["result"].startswith("Pruned after 1 of 5 folds (not among the best third)")
+    # A budget of 4 full checks covers more than 4 settings when most stop early.
+    used = [r["folds"] for r in rows[1:]]
+    assert len(used) > 4 and sum(used[:-1]) < 4 * len(folds) <= sum(used)
+    assert best == 0.0
 
 
 def test_multiclass_svm_stays_binary_per_class():

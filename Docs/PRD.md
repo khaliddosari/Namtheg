@@ -150,9 +150,13 @@ checked without training any model, so the audit itself never needs a GPU).
 - Model groups train in parallel on separate GPU containers. Each group has a time budget: once it
   is spent the group starts no new candidate or tuning trial and fits its best model, and a group
   still running well past it is stopped, so one stuck group never holds up the run.
-- Tuning uses a pruned search that abandons a clearly weak trial early and ends once several trials
-  in a row fail to beat the best by more than its cross-validation noise; boosted trees use early
-  stopping instead of a fixed training length.
+- Tuning starts from a few settings known to do well across many datasets (for boosted trees, the
+  top entries of AutoGluon's published zero-shot portfolio), then lets the search steer from the
+  results, modelling how settings interact. On large data a setting is dropped after one fold
+  unless it is among the best third so far; on small data, once it falls behind the median. The
+  budget counts full cross-validation checks, so a dropped setting costs only the folds it used,
+  and the search ends once several checks' worth of folds fail to beat the best by more than its
+  cross-validation noise. Boosted trees use early stopping instead of a fixed training length.
 - Class imbalance is handled before training (balanced weights per fold, macro-F1 selection), not
   by resampling, which can leak duplicate rows across a cross-validation split.
 - Every result is compared against a feature-blind baseline on the same split; a model that does not
@@ -268,3 +272,11 @@ relevant caveat, using only numbers verified against the run's own computed resu
 - Model groups got a time budget and a hard stop, and cuML runs on plain GPU memory instead of
   managed (UVM) memory. Under UVM the SVM/KNN/linear group of a 300,000-row run hung until the
   2-hour GPU timeout; rerun on the same data, its ridge regression fit blocked in GPU allocation.
+- Tuning starts from settings that did well across many datasets (for boosted trees, the top entries
+  of AutoGluon's 2023 zero-shot portfolio) instead of random ones, steers from its results sooner,
+  and on large data drops a setting after one fold unless it is among the best third. The trial
+  budget now counts full cross-validation checks, so the same budget covers more settings. Before,
+  the search usually stopped while still guessing at random (a flight-delay run stopped after 7
+  random trials). On a 120,000-row flight-delay sample, run on CPU with the production limits, the
+  new search tried 2 to 5 times as many settings in the same time, matched the old one on three of
+  four model groups and improved the fourth slightly (test R2 0.0434 to 0.0444).

@@ -4,9 +4,13 @@ One call trains one *group* of candidates; the backend runs groups in
 parallel on separate GPUs. Within a group, on the same held-out split and CV
 folds:
 1. Every candidate is cross-validated with default parameters.
-2. The group's best is tuned with Optuna (TPE sampler, median pruning after
-   each fold, so weak trials stop early), selected by CV mean only. The search
-   ends once TUNING_PATIENCE trials in a row fail to beat the best by more than
+2. The group's best is tuned with Optuna, selected by CV mean only. It first
+   tries STARTING_POINTS, settings that did well across many datasets, then
+   TPE steers from the results. Weak trials stop early: on large folds after
+   one fold unless among the best third so far (successive halving), on small
+   folds once behind the median. The budget counts full CV checks, so a trial
+   stopped early costs only the folds it used, and the search ends once
+   TUNING_PATIENCE checks' worth of folds fail to beat the best by more than
    the noise in its CV folds.
 3. It is refit on the training split and scored once on the test split.
 
@@ -52,11 +56,17 @@ from app.training.runtime import BUNDLE_FORMAT
 ONE_HOT_MAX_CARDINALITY = 10
 SCALED_MAX_CATEGORIES = 20
 MAX_TREES = 3000
+MIN_LEARNING_RATE = 0.015  # slower boosted trees need more than MAX_TREES trees on a large table
 EARLY_STOPPING_ROUNDS = 50
 EARLY_STOPPING_FRACTION = 0.1
 SVM_MAX_ROWS = 100_000  # kernel SVM cost grows quadratically; past this it isn't worth the GPU time
 KNN_MAX_ROWS = 1_000_000
-TUNING_PATIENCE = 5  # trials in a row without a gain beyond CV noise before tuning stops
+# Full CV checks' worth of folds, after the starting points, without a gain
+# beyond CV noise before tuning stops.
+TUNING_PATIENCE = 5
+# A fold this large ranks settings reliably on its own, so a weak trial can be
+# dropped after one; smaller folds wait for the median.
+HALVING_MIN_FOLD_ROWS = 10_000
 
 GBDT = ("XGBoost", "XGBoost Leaf-wise", "CatBoost")
 FAMILY = {"XGBoost": "gbdt", "XGBoost Leaf-wise": "gbdt", "CatBoost": "gbdt",
@@ -76,24 +86,68 @@ DEFAULT_PARAMS = {
 }
 # Settings that define a candidate rather than tune it.
 FIXED_PARAMS = {"XGBoost Leaf-wise": {"grow_policy": "lossguide", "max_depth": 0}}
+# Tried first when a model is tuned, before the search steers itself. The
+# boosted-tree ones are the top entries of AutoGluon's 2023 zero-shot portfolio
+# (Apache-2.0), picked for doing well across a large benchmark of datasets, in
+# its priority order; settings an entry leaves out are the library defaults
+# AutoGluon ran it with. Leaf-wise XGBoost takes the LightGBM entries, which
+# also grow trees leaf by leaf (num_leaves -> max_leaves, feature_fraction ->
+# colsample_bytree), except extra-trees ones, which XGBoost can't do. Entries
+# slower than MIN_LEARNING_RATE are left out. SVM, KNN and linear models have
+# no such portfolio, so theirs are spread across the search range.
+STARTING_POINTS = {
+    "XGBoost": [
+        {"learning_rate": 0.0181, "max_depth": 10, "subsample": 1.0, "colsample_bytree": 0.692,
+         "min_child_weight": 0.603, "reg_lambda": 1.0},
+        {"learning_rate": 0.0878, "max_depth": 5, "subsample": 1.0, "colsample_bytree": 0.663,
+         "min_child_weight": 0.629, "reg_lambda": 1.0},
+        {"learning_rate": 0.0929, "max_depth": 7, "subsample": 1.0, "colsample_bytree": 0.909,
+         "min_child_weight": 0.804, "reg_lambda": 1.0},
+        {"learning_rate": 0.0384, "max_depth": 7, "subsample": 1.0, "colsample_bytree": 0.745,
+         "min_child_weight": 0.556, "reg_lambda": 1.0},
+        {"learning_rate": 0.0779, "max_depth": 6, "subsample": 1.0, "colsample_bytree": 0.633,
+         "min_child_weight": 1.08, "reg_lambda": 1.0},
+    ],
+    "XGBoost Leaf-wise": [
+        {"learning_rate": 0.03, "max_leaves": 128, "subsample": 1.0, "colsample_bytree": 0.9,
+         "min_child_weight": 1.0, "reg_lambda": 1.0},
+        {"learning_rate": 0.0471, "max_leaves": 89, "subsample": 1.0, "colsample_bytree": 0.625,
+         "min_child_weight": 1.0, "reg_lambda": 1.0},
+        {"learning_rate": 0.0186, "max_leaves": 22, "subsample": 1.0, "colsample_bytree": 0.742,
+         "min_child_weight": 1.0, "reg_lambda": 1.0},
+        {"learning_rate": 0.0313, "max_leaves": 210, "subsample": 1.0, "colsample_bytree": 0.825,
+         "min_child_weight": 1.0, "reg_lambda": 1.0},
+    ],
+    "CatBoost": [
+        {"learning_rate": 0.0686, "depth": 6, "l2_leaf_reg": 2.15},
+        {"learning_rate": 0.0494, "depth": 4, "l2_leaf_reg": 4.56},
+        {"learning_rate": 0.0173, "depth": 8, "l2_leaf_reg": 3.33},
+        {"learning_rate": 0.0503, "depth": 5, "l2_leaf_reg": 1.05},
+        {"learning_rate": 0.0848, "depth": 7, "l2_leaf_reg": 4.52},
+    ],
+    "SVM": [{"C": 10.0, "gamma": 0.01}, {"C": 1.0, "gamma": 0.1}, {"C": 100.0, "gamma": 0.001}],
+    "KNN": [{"n_neighbors": 5, "weights": "distance"}, {"n_neighbors": 30, "weights": "distance"},
+            {"n_neighbors": 15, "weights": "uniform"}],
+    "Linear": [{"strength": 0.01}, {"strength": 0.1}, {"strength": 10.0}],
+}
 
 
 def search_space(name: str, trial) -> dict:
     f = trial.suggest_float
     if name == "XGBoost":
-        return {"learning_rate": f("learning_rate", 0.02, 0.3, log=True),
+        return {"learning_rate": f("learning_rate", MIN_LEARNING_RATE, 0.3, log=True),
                 "max_depth": trial.suggest_int("max_depth", 3, 10),
                 "subsample": f("subsample", 0.6, 1.0), "colsample_bytree": f("colsample_bytree", 0.5, 1.0),
-                "min_child_weight": f("min_child_weight", 1.0, 10.0, log=True),
+                "min_child_weight": f("min_child_weight", 0.5, 10.0, log=True),
                 "reg_lambda": f("reg_lambda", 1e-3, 10.0, log=True)}
     if name == "XGBoost Leaf-wise":
-        return {"learning_rate": f("learning_rate", 0.02, 0.3, log=True),
+        return {"learning_rate": f("learning_rate", MIN_LEARNING_RATE, 0.3, log=True),
                 "max_leaves": trial.suggest_int("max_leaves", 8, 256, log=True),
                 "subsample": f("subsample", 0.6, 1.0), "colsample_bytree": f("colsample_bytree", 0.5, 1.0),
-                "min_child_weight": f("min_child_weight", 1.0, 10.0, log=True),
+                "min_child_weight": f("min_child_weight", 0.5, 10.0, log=True),
                 "reg_lambda": f("reg_lambda", 1e-3, 10.0, log=True)}
     if name == "CatBoost":
-        return {"learning_rate": f("learning_rate", 0.02, 0.3, log=True),
+        return {"learning_rate": f("learning_rate", MIN_LEARNING_RATE, 0.3, log=True),
                 "depth": trial.suggest_int("depth", 4, 10),
                 "l2_leaf_reg": f("l2_leaf_reg", 1.0, 10.0, log=True)}
     if name == "SVM":
@@ -252,8 +306,8 @@ def predict(pipe: Pipeline, X: pd.DataFrame) -> np.ndarray:
 
 
 def cross_validate(name, params, X, y, folds, task, device, balanced, n_classes, metric, trial=None) -> list[float]:
-    """CV scores; with an Optuna trial, reports after each fold and stops
-    early when the trial is clearly behind (median pruning)."""
+    """CV scores; with an Optuna trial, reports the running mean after each
+    fold (step = folds done) and stops early when the trial's pruner says so."""
     import optuna
 
     scores = []
@@ -263,9 +317,9 @@ def cross_validate(name, params, X, y, folds, task, device, balanced, n_classes,
             pred = predict(pipe, X.iloc[va])
         scores.append(score(metric, y[va], pred))
         if trial is not None:
-            trial.report(float(np.mean(scores)), i)
+            trial.report(float(np.mean(scores)), i + 1)
             if trial.should_prune():
-                raise optuna.TrialPruned()
+                raise optuna.TrialPruned(f"after {i + 1} of {len(folds)} folds")
     return scores
 
 
@@ -336,53 +390,74 @@ def cv_noise(fold_scores: list[float]) -> float:
 
 
 def tune(name, X, y, folds, task, device, balanced, n_classes, metric, start_score, n_trials, timeout, min_gain=0.0):
-    """Optuna TPE with median pruning. The defaults win unless a trial beats
-    them on CV mean. Stops early after TUNING_PATIENCE trials in a row (pruned
-    and failed ones included) that beat the best by no more than min_gain."""
+    """Optuna: STARTING_POINTS first, then multivariate TPE, which models how
+    settings interact. The defaults win unless a trial beats them on CV mean.
+    n_trials is a budget in full CV checks: a trial stopped after one of five
+    folds uses a fifth of one. On folds of HALVING_MIN_FOLD_ROWS or more, a
+    trial must be among the best third after one fold and again after three
+    (successive halving); on smaller folds it stops once behind the median.
+    After the starting points, the search ends once TUNING_PATIENCE checks'
+    worth of folds (pruned and failed trials included) beat the best by no
+    more than min_gain."""
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    n_folds = len(folds)
+    starts = STARTING_POINTS[name]
+    halving = min(len(va) for _, va in folds) >= HALVING_MIN_FOLD_ROWS
     best = {"params": dict(DEFAULT_PARAMS[name]), "score": start_score}
-    stale = {"trials": 0}
+    spent = {"folds": 0, "stale": 0}
     rows = [{"trial": 0, "parameters": "Baseline Settings", "score": round(start_score, 4),
-             "result": "Defaults (CV mean)"}]
+             "result": "Defaults (CV mean)", "folds": n_folds}]
 
     def objective(trial):
         params = search_space(name, trial)
-        stale["trials"] += 1
+        note = " (starting point)" if trial.number < len(starts) else ""
+        row = {"trial": trial.number + 1, "parameters": json.dumps(params), "score": None}
+        rows.append(row)
         try:
             value = float(np.mean(cross_validate(name, params, X, y, folds, task, device, balanced,
                                                  n_classes, metric, trial=trial)))
-        except optuna.TrialPruned:
-            rows.append({"trial": trial.number + 1, "parameters": json.dumps(params), "score": None,
-                         "result": "Pruned early (behind the median)"})
+        except optuna.TrialPruned as e:
+            row["result"] = f"Pruned {e} ({'not among the best third' if halving else 'behind the median'}){note}"
             raise
         except Exception as e:
-            rows.append({"trial": trial.number + 1, "parameters": json.dumps(params), "score": None,
-                         "result": f"Failed: {str(e)[:80]}"})
+            row["result"] = f"Failed: {str(e)[:80]}{note}"
             raise
         delta = value - best["score"]
-        if delta > min_gain:
-            stale["trials"] = 0
+        trial.set_user_attr("gain", delta > min_gain)
         if value > best["score"]:
             best.update(params=params, score=value)
-            result = f"New best! CV +{delta:.4f}"
+            row["result"] = f"New best! CV +{delta:.4f}{note}"
         else:
-            result = f"No improvement (CV={value:.4f})"
-        rows.append({"trial": trial.number + 1, "parameters": json.dumps(params), "score": round(value, 4),
-                     "result": result})
+            row["result"] = f"No improvement (CV={value:.4f}){note}"
+        row["score"] = round(value, 4)
         return value
+
+    def account(study, frozen):
+        # Folds this trial used; a failed one also spent the fold it failed in.
+        used = max(1, len(frozen.intermediate_values) + (frozen.state == optuna.trial.TrialState.FAIL))
+        for row in rows:
+            if row["trial"] == frozen.number + 1:
+                row["folds"] = used
+        spent["folds"] += used
+        if frozen.user_attrs.get("gain"):
+            spent["stale"] = 0
+        elif frozen.number >= len(starts):
+            spent["stale"] += used
+        if spent["folds"] >= n_trials * n_folds or spent["stale"] >= TUNING_PATIENCE * n_folds:
+            study.stop()
 
     study = optuna.create_study(
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=4, n_warmup_steps=1),
+        sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE, multivariate=True, n_startup_trials=len(starts)),
+        pruner=(optuna.pruners.SuccessiveHalvingPruner(min_resource=1, reduction_factor=3) if halving
+                else optuna.pruners.MedianPruner(n_startup_trials=4, n_warmup_steps=2)),
     )
-    def stop_when_stale(study, _trial):
-        if stale["trials"] >= TUNING_PATIENCE:
-            study.stop()
-
-    study.optimize(objective, n_trials=n_trials, timeout=timeout, catch=(Exception,), callbacks=[stop_when_stale])
+    for params in starts:
+        study.enqueue_trial(params)
+    # Every trial uses at least one fold, so `account` stops it before this cap.
+    study.optimize(objective, n_trials=n_trials * n_folds, timeout=timeout, catch=(Exception,), callbacks=[account])
     return best["params"], best["score"], rows
 
 
@@ -485,7 +560,8 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         n_trials=int(plan.get("tuning_trials", 20)) if remaining > 0 else 0,
         timeout=int(min(plan.get("tuning_timeout_seconds", 300), max(remaining, 0))),
     )
-    _log(started, f"Tuned {best}: CV {metric} {cv_mean:.4f} after {len(trials) - 1} trials")
+    pruned = sum(row["score"] is None for row in trials[1:])
+    _log(started, f"Tuned {best}: CV {metric} {cv_mean:.4f} after {len(trials) - 1} trials ({pruned} stopped early)")
 
     with gpu_only(device):
         if FAMILY[best] == "gbdt":

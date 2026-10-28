@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     agent_time_budget_seconds: int = 240
 
     # GPU training (app/training/gpu_app.py). Hyperparameter search stops at
-    # whichever limit comes first.
+    # whichever limit comes first. tuning_trials counts full cross-validation
+    # checks: a trial stopped after one of five folds uses a fifth of one.
     tuning_trials: int = 20
     tuning_timeout_seconds: int = 300
     # Each model group starts no new work after this, then fits its best model;
