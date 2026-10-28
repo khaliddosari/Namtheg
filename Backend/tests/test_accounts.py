@@ -237,8 +237,8 @@ def test_my_runs_lists_what_i_upload_or_start_newest_first(outbox, monkeypatch):
     assert (runs[0]["status"], runs[0]["target"]) == ("queued", "charges")
     # Nothing about the account is added to the run, which anyone with its link can read.
     assert set(client.get(f"/runs/{first}/status").json()) == {"run_id", "status", "filename", "source_format",
-                                                               "task", "target", "prediction_time", "queued_at",
-                                                               "executor"}
+                                                               "task", "target", "prediction_time", "new_column",
+                                                               "queued_at", "executor"}
 
 
 def test_a_run_uploaded_before_signing_in_can_be_saved_to_the_account(outbox):

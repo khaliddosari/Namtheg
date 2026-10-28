@@ -14,6 +14,7 @@ import time
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
 from app import storage
 from app.config import settings
@@ -29,6 +30,7 @@ GROUP_GRACE_SECONDS = 300
 WEIGHTS_FILES = {"xgboost-json": "model_weights.json", "catboost-cbm": "model_weights.cbm",
                  "numpy-npz": "model_weights.npz"}
 ESTIMATOR_KIND = {"xgboost-json": "xgboost-json", "catboost-cbm": "catboost-cbm", "numpy-npz": "sklearn"}
+MAX_FORM_CHOICES = 100  # values a category input may take for the predict form to list them
 
 
 class GPUServiceError(RuntimeError):
@@ -123,6 +125,27 @@ def _display(name: str, task: str) -> str:
     return name
 
 
+def _form_choices(frame: pd.DataFrame, columns: list[str]) -> dict[str, list[str]]:
+    """The values each category input took in training (cleaned, so a code that
+    means missing isn't one), for the predict form to offer as a list instead
+    of free text that a typo or a capital letter would miss. Number codes sort
+    as numbers. A column with more values than a list can hold stays free text."""
+    def order(value: str):
+        try:
+            return (0, float(value), value)
+        except ValueError:
+            return (1, 0.0, value.lower())
+
+    choices = {}
+    for c in columns:
+        if c not in frame or is_numeric_dtype(frame[c]) or is_bool_dtype(frame[c]):
+            continue
+        values = sorted(set(frame[c].dropna().astype(str).str.strip()) - {""}, key=order)
+        if 0 < len(values) <= MAX_FORM_CHOICES:
+            choices[c] = values
+    return choices
+
+
 # -- tabular -------------------------------------------------------------------------
 
 def train_tabular(run_id: str, target: str, task: str, imbalance_plan: dict) -> dict:
@@ -154,6 +177,7 @@ def train_tabular(run_id: str, target: str, task: str, imbalance_plan: dict) -> 
         "task": task, "model_name": _display(best["model_name"], task), "problem_type": task, "target": target,
         "feature_cols": best["feature_cols"], "model_cols": best.get("model_cols"), "cleaning": fe.get("cleaning"),
         "feature_dtypes": {c: str(head[c].dtype) for c in best["feature_cols"] if c in head.columns},
+        "feature_values": _form_choices(frame, best["feature_cols"]),
         "class_labels": best["class_labels"], "params": best["params"], "preprocessing": best["preprocessing"],
         "weights_file": weights_file, "weights_format": best["weights_format"],
         "estimator_kind": ESTIMATOR_KIND[best["weights_format"]],

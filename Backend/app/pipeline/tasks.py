@@ -16,7 +16,8 @@ class TaskError(ValueError):
     """The requested task doesn't fit the data. The message is safe to show the user."""
 
 
-def resolve(run_id: str, task: str, target: str | None, prediction_time: str | None = None) -> dict:
+def resolve(run_id: str, task: str, target: str | None, prediction_time: str | None = None,
+            new_column: str | None = None) -> dict:
     if task not in TASKS:
         raise TaskError(f"Unknown task {task!r}. Choose one of: {', '.join(TASKS)}.")
     ingest = storage.read_json(run_id, "ingest.json") or {}
@@ -36,4 +37,6 @@ def resolve(run_id: str, task: str, target: str | None, prediction_time: str | N
     spec = {"task": task, "target": target}
     if prediction_time and prediction_time.strip():
         spec["prediction_time"] = " ".join(prediction_time.split())
+    if new_column and new_column.strip():
+        spec["new_column"] = " ".join(new_column.split())
     return spec

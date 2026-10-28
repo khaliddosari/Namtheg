@@ -251,6 +251,15 @@ def test_start_passes_on_the_prediction_time(client, uploaded_run):
     assert storage.read_status(uploaded_run)["prediction_time"] == "when the quote is issued"
 
 
+def test_start_passes_on_the_new_column(client, uploaded_run):
+    body = {"target": "charges", "new_column": "x" * 501}
+    assert client.post(f"/runs/{uploaded_run}/start", json=body).status_code == 422
+    body["new_column"] = "  BMI bands:\n under 25, 25 and over "
+    assert client.post(f"/runs/{uploaded_run}/start", json=body).status_code == 200
+    assert client.started[-1] == {"task": "auto", "target": "charges", "new_column": "BMI bands: under 25, 25 and over"}
+    assert storage.read_status(uploaded_run)["new_column"] == "BMI bands: under 25, 25 and over"
+
+
 def test_cancel_and_diagnostics(client, uploaded_run):
     assert client.post(f"/runs/{uploaded_run}/cancel").status_code == 409  # not running
     client.post(f"/runs/{uploaded_run}/start", json={"target": "charges"})

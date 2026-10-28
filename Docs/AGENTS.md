@@ -26,8 +26,10 @@ read from the PRD and the actual source (`Backend/app/agent/analyst.py`,
 
 - The analyst investigates a dataset with sandboxed code and submits a plan: a data dictionary,
   the problem type, columns to drop with evidence, cleaning (codes that mean missing, target label
-  merges, number codes as categories, date parts), findings, and open questions. Every decision is
-  checked against the data in code before the pipeline uses it. It never trains a model itself.
+  merges, number codes as categories, date parts), the new column the user asked for if any (a
+  formula or ranges of other columns, never the target), findings, and open questions. Every
+  decision is checked against the data in code before the pipeline uses it. It never trains a model
+  itself.
 - The report writer states results in plain language, citing only numbers the pipeline actually
   computed; an unverified claim is rewritten once, then replaced by a deterministic template.
 - Neither ever claims a model is production ready, and neither fabricates a metric.

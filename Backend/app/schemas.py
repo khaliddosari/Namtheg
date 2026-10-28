@@ -69,6 +69,11 @@ class StartRunRequest(BaseModel):
         description="When the model will make its predictions, in the user's words (e.g. 'when the flight "
                     "leaves the gate'). Columns not known by then are left out.",
     )
+    new_column: Optional[str] = Field(
+        None, max_length=500,
+        description="A column to add that the data doesn't have, in the user's words (e.g. 'BMI band: under "
+                    "18.5, 18.5 to 25, 25 to 30, 30 and over'). The analyst builds it from the other columns.",
+    )
 
 
 class DirectUploadRequest(BaseModel):

@@ -9,6 +9,9 @@ Models are stored in portable forms, never as library pickles that break
 across builds: XGBoost JSON, CatBoost .cbm, plain numpy arrays, and
 scikit-learn objects (portable at the pinned version).
 """
+import ast
+import operator
+import re
 import warnings
 
 import numpy as np
@@ -17,6 +20,8 @@ import pandas as pd
 BUNDLE_FORMAT = "namtheg-bundle-v2"
 LEGACY_FORMAT = "namtheg-portable-v1"
 DATE_PARTS = ("year", "month", "day", "day_of_week", "hour")
+MAX_FORMULA_LENGTH = 300
+MAX_FORMULA_NODES = 60
 
 
 # -- input cleaning --------------------------------------------------------------
@@ -72,16 +77,150 @@ def date_part(stamps: pd.Series, part: str) -> pd.Series:
     return values.astype("float64")
 
 
+# -- new columns -------------------------------------------------------------------
+# A column the user asked for, built from the others. A formula is parsed, never
+# executed: only arithmetic, comparisons, and/or/not and a few functions of
+# columns and constants are allowed, so a formula can't run code wherever the
+# model runs. A column name that isn't a plain identifier goes in backticks.
+
+_ARITHMETIC = {ast.Add: np.add, ast.Sub: np.subtract, ast.Mult: np.multiply, ast.Div: np.divide, ast.Pow: np.power}
+_COMPARISONS = {ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge,
+                ast.Eq: operator.eq, ast.NotEq: operator.ne}
+_FUNCTIONS = {"log": np.log, "log1p": np.log1p, "sqrt": np.sqrt, "abs": np.abs}
+
+
+def _parse_formula(formula: str) -> tuple[ast.AST, dict[str, str]]:
+    """The formula's syntax tree, with each `backticked` name swapped for a
+    placeholder, and the map from placeholders back to the names."""
+    if not isinstance(formula, str) or not formula.strip() or len(formula) > MAX_FORMULA_LENGTH:
+        raise ValueError(f"A formula is an expression of at most {MAX_FORMULA_LENGTH} characters.")
+    names: dict[str, str] = {}
+
+    def placeholder(match: re.Match) -> str:
+        key = f"_col{len(names)}_"
+        names[key] = match.group(1)
+        return key
+
+    try:
+        tree = ast.parse(re.sub(r"`([^`]+)`", placeholder, formula.strip()), mode="eval")
+    except SyntaxError as e:
+        raise ValueError(f"The formula doesn't parse: {e.msg}.") from None
+    if sum(1 for _ in ast.walk(tree)) > MAX_FORMULA_NODES:
+        raise ValueError("The formula is too long.")
+    return tree, names
+
+
+def _columns_in(node: ast.AST, names: dict[str, str], found: list[str]) -> None:
+    """Collects the columns a formula reads, and refuses anything else."""
+    if isinstance(node, ast.Expression):
+        _columns_in(node.body, names, found)
+    elif isinstance(node, ast.BinOp) and type(node.op) in _ARITHMETIC:
+        _columns_in(node.left, names, found)
+        _columns_in(node.right, names, found)
+    elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd, ast.Not)):
+        _columns_in(node.operand, names, found)
+    elif isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in _COMPARISONS:
+        _columns_in(node.left, names, found)
+        _columns_in(node.comparators[0], names, found)
+    elif isinstance(node, ast.BoolOp):
+        for value in node.values:
+            _columns_in(value, names, found)
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FUNCTIONS
+          and len(node.args) == 1 and not node.keywords):
+        _columns_in(node.args[0], names, found)
+    elif isinstance(node, ast.Name):
+        found.append(names.get(node.id, node.id))
+    elif not (isinstance(node, ast.Constant) and isinstance(node.value, (int, float, str))
+              and not isinstance(node.value, bool)):
+        raise ValueError(f"A formula may only use columns, numbers, text, + - * / **, comparisons, and, or, not "
+                         f"and {', '.join(_FUNCTIONS)}; it has {type(node).__name__}.")
+
+
+def new_column_sources(spec: dict) -> list[str]:
+    """The columns a new column is built from."""
+    if "bins" in spec:
+        return [spec["bins"]["column"]]
+    found: list[str] = []
+    _columns_in(*_parse_formula(spec["formula"]), found)
+    return list(dict.fromkeys(found))
+
+
+def _numeric(value):
+    if isinstance(value, pd.Series):
+        return pd.to_numeric(value, errors="coerce").astype("float64")
+    number = _number(value)
+    return np.nan if number is None else number
+
+
+def _evaluate(node: ast.AST, X: pd.DataFrame, names: dict[str, str]):
+    if isinstance(node, ast.Expression):
+        return _evaluate(node.body, X, names)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return X[names.get(node.id, node.id)]
+    if isinstance(node, ast.BinOp):
+        return _ARITHMETIC[type(node.op)](_numeric(_evaluate(node.left, X, names)),
+                                          _numeric(_evaluate(node.right, X, names)))
+    if isinstance(node, ast.UnaryOp):
+        value = _numeric(_evaluate(node.operand, X, names))
+        return 1.0 - value if isinstance(node.op, ast.Not) else -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.Call):
+        return _FUNCTIONS[node.func.id](_numeric(_evaluate(node.args[0], X, names)))
+    if isinstance(node, ast.BoolOp):
+        values = [_numeric(_evaluate(v, X, names)) for v in node.values]
+        combine = np.minimum if isinstance(node.op, ast.And) else np.maximum
+        result = values[0]
+        for value in values[1:]:
+            result = combine(result, value)
+        return result
+    # A comparison is 1 or 0, and missing where a side is. Against text it
+    # compares trimmed text, so a category column can be tested for a value.
+    left, right = _evaluate(node.left, X, names), _evaluate(node.comparators[0], X, names)
+    compare = _COMPARISONS[type(node.ops[0])]
+    if isinstance(left, str) or isinstance(right, str):
+        def as_text(v):
+            return v.astype(str).str.strip().where(v.notna()) if isinstance(v, pd.Series) else str(v).strip()
+        left, right = as_text(left), as_text(right)
+    else:
+        left, right = _numeric(left), _numeric(right)
+    missing = pd.Series(False, index=X.index)
+    for side in (left, right):
+        if isinstance(side, pd.Series):
+            missing |= side.isna()
+    return pd.Series(compare(left, right), index=X.index).astype("float64").mask(missing)
+
+
+def build_new_column(X: pd.DataFrame, spec: dict) -> pd.Series:
+    """The values of one new column: a number from a formula (missing where it
+    can't be computed, such as a division by zero), or the label of the range a
+    numeric column falls in, ranges starting at each cut point."""
+    if "bins" in spec:
+        bins = spec["bins"]
+        values = pd.to_numeric(X[bins["column"]], errors="coerce")
+        ranges = pd.cut(values, [-np.inf, *bins["edges"], np.inf], labels=bins["labels"], right=False)
+        return pd.Series(ranges, index=X.index).astype(object).where(values.notna())
+    tree, names = _parse_formula(spec["formula"])
+    _columns_in(tree, names, [])  # refuses anything but the allowed forms, wherever the spec came from
+    with np.errstate(all="ignore"):
+        result = pd.Series(_evaluate(tree, X, names), index=X.index)
+    return pd.to_numeric(result, errors="coerce").astype("float64").replace([np.inf, -np.inf], np.nan)
+
+
 def prepare(X: pd.DataFrame, cleaning: dict | None) -> pd.DataFrame:
     """Apply cleaning to raw input columns: codes that mean missing become
-    missing, number codes become categories, and each date column is replaced
-    by its calendar parts (new columns named "<column>__<part>")."""
+    missing, the new columns the user asked for are built from them, number
+    codes become categories, and each date column is replaced by its calendar
+    parts (new columns named "<column>__<part>")."""
     if not cleaning:
         return X
     X = X.copy()
     for col, codes in (cleaning.get("missing_codes") or {}).items():
         if col in X:
             X[col] = X[col].mask(is_code(X[col], codes))
+    for spec in cleaning.get("new_columns") or []:
+        if all(c in X for c in new_column_sources(spec)):
+            X[spec["name"]] = build_new_column(X, spec)
     for col in cleaning.get("categorical") or []:
         if col in X:
             X[col] = X[col].map(as_code).astype(object)

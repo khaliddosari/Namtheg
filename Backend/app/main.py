@@ -230,11 +230,12 @@ def start_run(run_id: str, req: StartRunRequest, request: Request, background: B
     if storage.read_status(run_id).get("status") in ("queued", "running"):
         raise HTTPException(409, "This run is already in progress.")
     try:
-        spec = tasks.resolve(run_id, req.task, req.target, req.prediction_time)
+        spec = tasks.resolve(run_id, req.task, req.target, req.prediction_time, req.new_column)
     except tasks.TaskError as e:
         raise HTTPException(400, str(e))
     storage.write_status(run_id, "queued", task=spec["task"], target=spec.get("target"),
-                         prediction_time=spec.get("prediction_time"), queued_at=time.time())
+                         prediction_time=spec.get("prediction_time"), new_column=spec.get("new_column"),
+                         queued_at=time.time())
     storage.update_status(run_id, **jobs.start(run_id, spec, background))
     accounts.link_run(request, run_id)
     return {"run_id": run_id, "status": "queued", **spec}
@@ -391,6 +392,8 @@ def model_schema(run_id: str) -> dict:
         "feature_cols": bundle["feature_cols"],
         "class_labels": bundle.get("class_labels"),
         "sample": sample,
+        # The values each category column took in training, for the form to offer as a list.
+        "feature_values": bundle.get("feature_values") or {},
     }
 
 

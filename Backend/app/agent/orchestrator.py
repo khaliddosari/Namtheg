@@ -163,7 +163,8 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
 
         _stage(run_id, "analysis")
         analysis = analyst.run_analyst(run_id, target, prof, detection, audit_report, llm, sandbox_future,
-                                       work=work, sample=sample, prediction_time=spec.get("prediction_time"))
+                                       work=work, sample=sample, prediction_time=spec.get("prediction_time"),
+                                       new_column=spec.get("new_column"))
     finally:
         _close_when_ready(sandbox_future)
         if executor is not None:
@@ -212,6 +213,7 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
                        "cleaning_applied": fe_report["cleaning_applied"],
                        "analysis": {k: analysis.get(k) for k in ("status", "notes", "code_runs", "seconds")} | {
                            "prediction_time": spec.get("prediction_time"),
+                           "new_column": spec.get("new_column"),
                            "problem_type_source": plan["problem_type_source"],
                            "summary": plan["summary"],
                            "findings": plan["findings"],

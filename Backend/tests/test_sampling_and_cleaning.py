@@ -9,12 +9,13 @@ import zipfile
 import joblib
 import numpy as np
 import pandas as pd
+import pytest
 
 from app import storage
 from app.agent import analyst, orchestrator
 from app.main import model_schema
 from app.pipeline import sampling
-from app.training.runtime import load_bundle
+from app.training.runtime import build_new_column, load_bundle, new_column_sources
 from tests.conftest import INSURANCE_CSV, ScriptedLLM, make_run
 
 
@@ -129,6 +130,7 @@ def test_cleaning_is_checked_against_the_data():
         "label_merges": [{"labels": ["Y", "yes"], "into": "Yes"}],
         "categorical": ["store"],
         "date_parts": {"visit": ["month", "day_of_week"]},  # the year is the same in every row
+        "new_columns": [],  # none asked for
     }
     assert [c["column"] for c in plan["data_dictionary"]["columns"]] == ["store"]
     assert any("[12345]" in n and "not in the data" in n for n in notes)
@@ -178,3 +180,113 @@ def test_cleaning_reaches_training_and_every_prediction(tmp_path, monkeypatch):
 
     schema = model_schema(run_id)  # the "Try it" form asks for raw values
     assert set(schema["feature_cols"]) == set(meta["feature_cols"]) and schema["sample"]["visit"] == df["visit"][0]
+
+
+# -- a new column the user asked for ----------------------------------------------------------
+
+def test_a_new_column_formula_is_parsed_never_run():
+    X = pd.DataFrame({"age": [20, 40, 0], "bmi": [25.0, 35.0, 40.0], "smoker": ["yes", "yes ", None],
+                      "total charges": ["100", "200", "x"]})
+
+    def build(formula):
+        return build_new_column(X, {"name": "new", "formula": formula}).tolist()
+
+    assert build("bmi / age")[:2] == [1.25, 0.875] and np.isnan(build("bmi / age")[2])  # 40 / 0 is missing
+    assert build('smoker == "yes" and bmi >= 30')[:2] == [0.0, 1.0] and np.isnan(build('smoker == "yes"')[2])
+    assert build("`total charges` / 100")[:2] == [1.0, 2.0] and np.isnan(build("`total charges` / 100")[2])
+    assert new_column_sources({"formula": "`total charges` * 2 + log(bmi) - age"}) == ["total charges", "bmi", "age"]
+    bands = {"name": "band", "bins": {"column": "bmi", "edges": [30.0], "labels": ["under 30", "30 and over"]}}
+    assert build_new_column(X, bands).tolist() == ["under 30", "30 and over", "30 and over"]
+    for formula in ["__import__('os').system('echo hi')", "age.real", "[age][0]", "(lambda: 1)()",
+                    "age if bmi else 0", "1 < age < 3", "open('x')", "eval('1')"]:
+        with pytest.raises(ValueError):
+            new_column_sources({"formula": formula})
+
+
+def test_new_columns_are_checked_against_the_data():
+    work = pd.read_csv(INSURANCE_CSV)
+    stats = {"numeric": True, "unique": int(work["charges"].nunique()), "rows": len(work)}
+    detection = {"problem_type": "regression"}
+
+    def check(*new_columns, drops=()):
+        submission = _submission(new_columns=list(new_columns),
+                                 drop_columns=[{"column": c, "reason": "other", "evidence": "x"} for c in drops])
+        return analyst.validate_analysis(submission, "charges", detection, list(work.columns), stats, work)
+
+    bands = {"column": "bmi", "edges": [18.5, 25, 30], "labels": ["under", "healthy", "over", "obese"]}
+    plan, notes = check({"name": "bmi band", "bins": bands, "description": "x"},
+                        {"name": "smoker_obese", "formula": 'smoker == "yes" and bmi >= 30', "description": "x"})
+    assert analyst.cleaning_spec(plan)["new_columns"] == [
+        {"name": "bmi band", "bins": {**bands, "edges": [18.5, 25.0, 30.0]}},
+        {"name": "smoker_obese", "formula": 'smoker == "yes" and bmi >= 30'},
+    ] and not notes
+
+    refused = [
+        ({"name": "per_year", "formula": "charges / age"}, "reads the target"),
+        ({"name": "southeast", "formula": 'region == "southeast"'}, "doesn't have"),
+        ({"name": "bmi", "formula": "bmi * 2"}, "name is taken"),
+        ({"name": "both", "formula": "bmi", "bins": {"column": "bmi", "edges": [30], "labels": ["a", "b"]}},
+         "one of the two"),
+        ({"name": "old", "formula": "age > 1000"}, "same in every row"),
+        ({"name": "nothing", "formula": "1 + 2"}, "no column"),
+        ({"name": "backwards", "bins": {"column": "bmi", "edges": [30, 25], "labels": ["a", "b", "c"]}}, "increasing"),
+        ({"name": "few", "bins": {"column": "bmi", "edges": [25, 30], "labels": ["a", "b"]}}, "3 in all"),
+        ({"name": "code", "formula": "__import__('os')"}, "may only use"),
+    ]
+    for item, reason in refused:
+        plan, notes = check(item, drops=["region"])
+        assert plan["cleaning"]["new_columns"] == [] and any(reason in n for n in notes), (item, notes)
+
+
+def test_a_new_column_is_only_offered_when_asked_for():
+    assert "new_columns" not in analyst.submit_analysis_tool(None).parameters["properties"]
+    assert "new_columns" in analyst.submit_analysis_tool(None, "BMI bands").parameters["properties"]
+    assert "new_columns" in analyst.SUBMIT_ANALYSIS.parameters["properties"]  # the shared spec is left as it was
+
+
+def test_a_new_column_reaches_training_and_every_prediction(tmp_path, monkeypatch):
+    bands = {"name": "bmi_band", "bins": {"column": "bmi", "edges": [18.5, 25, 30],
+                                          "labels": ["under", "healthy", "over", "obese"]}, "description": "BMI band."}
+    llm = ScriptedLLM([[("submit_analysis", _submission(new_columns=[bands]))]])
+    _use_llm(monkeypatch, llm)
+    df = pd.read_csv(INSURANCE_CSV)
+    run_id = make_run(df)
+    asked = "BMI bands: under 18.5, 18.5 to 25, 25 to 30, 30 and over"
+    result = orchestrator.run_agent(run_id, {"task": "auto", "target": "charges", "new_column": asked})
+    assert result["status"] == "succeeded", result.get("error")
+    assert f'"new_column": "{asked}"' in llm.analyst_transcripts[0][0]["content"]
+    assert result["extra"]["analysis"]["new_column"] == asked
+    assert any(c.startswith("Added the column bmi_band you asked for") for c in result["extra"]["cleaning_applied"])
+
+    engineered = storage.load_engineered(run_id)
+    assert set(engineered["bmi_band"]) == {"under", "healthy", "over", "obese"}
+    meta = storage.read_json(run_id, "model_meta.json")
+    assert "bmi_band" not in meta["feature_cols"] and "bmi" in meta["feature_cols"]  # predictions take raw columns
+    assert "bmi_band" in meta["model_cols"] and meta["cleaning"]["new_columns"][0]["name"] == "bmi_band"
+    model = load_bundle(joblib.load(storage.artifact_path(run_id, "model.joblib")))["model"]
+    raw = df.drop(columns=["charges"]).head(25)
+    expected = model.estimator.predict(model.preprocessor.transform(engineered[model.model_cols].head(25)))
+    assert np.allclose(np.asarray(model.predict(raw)).ravel(), np.asarray(expected).ravel())
+
+    zipfile.ZipFile(storage.artifact_path(run_id, "model_package.zip")).extractall(tmp_path / "pkg")
+    raw.to_csv(tmp_path / "in.csv", index=False)
+    subprocess.run([sys.executable, "predict.py", str(tmp_path / "in.csv"), str(tmp_path / "out.csv")],
+                   cwd=tmp_path / "pkg", check=True, capture_output=True)
+    assert len(pd.read_csv(tmp_path / "out.csv")) == 25
+
+    # The "Try it" form lists each category column's values.
+    assert model_schema(run_id)["feature_values"] == {
+        "sex": ["female", "male"], "smoker": ["no", "yes"],
+        "region": ["northeast", "northwest", "southeast", "southwest"],
+    }
+
+
+def test_a_new_column_that_isnt_built_says_why(monkeypatch):
+    llm = ScriptedLLM([[("submit_analysis", _submission(new_columns=[{"name": "x", "formula": "charges * 2"}]))]])
+    _use_llm(monkeypatch, llm)
+    result = orchestrator.run_agent(make_run(pd.read_csv(INSURANCE_CSV)),
+                                    {"task": "auto", "target": "charges", "new_column": "twice the charges"})
+    assert result["status"] == "succeeded", result.get("error")
+    finding = next(f for f in result["extra"]["analysis"]["findings"] if "wasn't added" in f["finding"])
+    assert "reads the target" in finding["evidence"]
+    assert not any("Added the column" in c for c in result["extra"]["cleaning_applied"])
