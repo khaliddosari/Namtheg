@@ -2,6 +2,8 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from app.config import settings
@@ -86,6 +88,21 @@ def uploaded_run():
     storage.write_json(run_id, "ingest.json", report)
     storage.write_status(run_id, "uploaded", filename="insurance.csv", source_format="csv")
     return run_id
+
+
+def flight_times(n: int = 600, seed: int = 0) -> pd.DataFrame:
+    """Durations that add up the way a flight's do: the arrival delay is the
+    departure delay plus taxi-out, time in the air and taxi-in, minus the
+    scheduled time. No column predicts it alone."""
+    rng = np.random.default_rng(seed)
+    scheduled = rng.uniform(60, 300, n)
+    df = pd.DataFrame({
+        "DepDelay": rng.gamma(0.8, 40, n) - 10, "TaxiOut": rng.gamma(4, 4, n), "CRSElapsedTime": scheduled,
+        "AirTime": 0.85 * scheduled + rng.normal(0, 8, n), "TaxiIn": rng.gamma(3, 2.5, n),
+        "Distance": 7 * scheduled + rng.normal(0, 40, n),
+    })
+    df["ArrDelay"] = df["DepDelay"] + df["TaxiOut"] + df["AirTime"] + df["TaxiIn"] - df["CRSElapsedTime"]
+    return df
 
 
 class ScriptedLLM:

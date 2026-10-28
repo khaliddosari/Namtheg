@@ -93,7 +93,7 @@ export function AnalysisDialog({
                 {dictionary?.target_meaning && <Row label={result.target ?? "Target"}>{dictionary.target_meaning}</Row>}
                 {analysis.prediction_time !== undefined && (
                   <Row label="Predicting">
-                    {analysis.prediction_time ?? "Not stated, so the model could use anything recorded before the outcome."}
+                    {analysis.prediction_time ?? "Not stated, so the model could use anything known before the final step toward the outcome."}
                   </Row>
                 )}
                 {sample?.sampled && (

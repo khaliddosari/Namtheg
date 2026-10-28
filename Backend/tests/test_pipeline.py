@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from app import jobs, storage
 from app.agent import analyst, orchestrator
 from app.pipeline import export, train
-from tests.conftest import INSURANCE_CSV, ScriptedLLM
+from tests.conftest import INSURANCE_CSV, ScriptedLLM, flight_times, make_run
 
 ANALYST_SCRIPT = [
     [("run_python", {"code": "df.groupby('smoker')['charges'].mean().round(2)"})],
@@ -100,6 +100,38 @@ def test_dropping_a_column_for_its_timing_needs_a_stated_prediction_time():
     assert timing not in reasons(analyst.submit_analysis_tool(None))
     assert timing in reasons(analyst.submit_analysis_tool("when the quote is issued"))
     assert timing in reasons(analyst.SUBMIT_ANALYSIS)  # the shared spec is left as it was
+
+
+def _flight_submission(drops: list[str]) -> dict:
+    return {
+        "problem_type": "regression", "problem_type_rationale": "A delay in minutes.",
+        "drop_columns": [{"column": c, "reason": "leakage", "evidence": f"{c} is recorded at or after touchdown."}
+                         for c in drops],
+        "findings": [], "open_questions": [], "summary": "Delays carry over from departure.",
+    }
+
+
+@pytest.mark.parametrize("second_drops", [["TaxiIn", "AirTime"], ["TaxiIn"]])
+def test_kept_columns_that_rebuild_the_target_are_sent_back_once(monkeypatch, second_drops):
+    llm = ScriptedLLM([[("submit_analysis", _flight_submission(["TaxiIn"]))],
+                       [("submit_analysis", _flight_submission(second_drops))]])
+    _use_llm(monkeypatch, llm)
+    result = orchestrator.run_agent(make_run(flight_times()), {"task": "auto", "target": "ArrDelay"})
+    assert result["status"] == "succeeded", result.get("error")
+
+    # Keeping the time in the air lets the columns add up to the delay: the analysis comes back.
+    sent_back = llm.analyst_transcripts[1][-1]["content"]
+    assert sent_back.startswith("Not accepted yet") and "AirTime" in sent_back
+    analysis = result["extra"]["analysis"]
+    assert {d["column"] for d in analysis["drop_columns"]} == set(second_drops)
+    assert any(note.startswith("Sent the analysis back once") for note in analysis["notes"])
+    # Only once: a second submission that still keeps it is accepted, with a critical finding.
+    leftover = [f for f in analysis["findings"] if "plain arithmetic" in f["finding"]]
+    if "AirTime" in second_drops:
+        assert leftover == []
+    else:
+        assert leftover[0]["severity"] == "critical" and leftover[0]["verified"]
+        assert "AirTime" in leftover[0]["evidence"]
 
 
 def test_hallucinated_summary_falls_back_to_template(uploaded_run, monkeypatch):

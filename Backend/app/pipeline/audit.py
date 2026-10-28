@@ -20,6 +20,17 @@ LEAKAGE_FOLDS = 3
 # A single feature explaining the target this well is almost always leakage
 # (the feature is derived from the target, or recorded after the outcome).
 LEAKAGE_SCORE_THRESHOLD = 0.98
+# Columns can also leak together: an arrival delay is the departure delay plus
+# the taxi and flight times minus the scheduled time, so those columns rebuild it
+# by plain addition even though none does alone. A linear formula of a few
+# columns explaining this much of the target is adding up, not predicting (on a
+# flight table the honest columns reach 0.9475, the leaking ones 0.984).
+FORMULA_R2 = 0.97
+FORMULA_MAX_COLUMNS = 6
+FORMULA_MIN_COMPLETE = 0.9  # share of sampled rows a formula's columns must all fill
+# A class target can be decided by a number (a late flag by the delay in minutes);
+# that number is then checked for a formula instead.
+PARENT_MIN_UNIQUE = 20
 MIN_SAMPLES_PER_CLASS = 10
 TEXT_PATTERN_SAMPLE = 500
 TEXT_PATTERN_MIN_SHARE = 0.9
@@ -107,6 +118,86 @@ def _single_feature_score(x: pd.Series, y: pd.Series, problem_type: str) -> floa
     if not total:
         return None
     return max(float(1 - ((y - preds.astype(float)) ** 2).sum() / total), rank_r2)
+
+
+def _held_out_r2(X: np.ndarray, y: np.ndarray) -> float:
+    """R2 of a least-squares line, each fold scored by a fit on the other folds."""
+    fold = np.random.default_rng(0).integers(0, LEAKAGE_FOLDS, size=len(y))
+    sse = 0.0
+    for k in range(LEAKAGE_FOLDS):
+        train, test = fold != k, fold == k
+        if not train.any() or not test.any():
+            return 0.0
+        coef, *_ = np.linalg.lstsq(np.column_stack([X[train], np.ones(train.sum())]), y[train], rcond=None)
+        sse += float(((y[test] - np.column_stack([X[test], np.ones(test.sum())]) @ coef) ** 2).sum())
+    total = float(((y - y.mean()) ** 2).sum())
+    return 1 - sse / total if total else 0.0
+
+
+def formula_leak(df: pd.DataFrame, target: str, columns: list[str]) -> dict | None:
+    """The shortest linear formula of `columns` that rebuilds the numeric
+    `target` with held-out R2 of at least FORMULA_R2, or None. Columns join one
+    at a time, best first, up to FORMULA_MAX_COLUMNS; the search never stops
+    early on a small gain, since parts of a sum can help only once their
+    counterpart is in (time in the air, next to the scheduled time). Parts of
+    a sum show up with weights near plus or minus one."""
+    s = df[df[target].notna()] if target in df.columns else df.iloc[:0]
+    if len(s) > LEAKAGE_SAMPLE_ROWS:
+        s = s.sample(LEAKAGE_SAMPLE_ROWS, random_state=0)
+    if len(s) < 30 or not is_numeric_dtype(s[target]) or is_bool_dtype(s[target]):
+        return None
+    names = [c for c in columns if c != target and c in s.columns and is_numeric_dtype(s[c])
+             and not is_bool_dtype(s[c]) and s[c].nunique(dropna=True) > 1
+             and s[c].notna().mean() >= FORMULA_MIN_COMPLETE][:LEAKAGE_MAX_FEATURES]
+    if not names:
+        return None
+    X = s[names].to_numpy(dtype=float)
+    y = s[target].to_numpy(dtype=float)
+    chosen: list[int] = []
+    for _ in range(min(FORMULA_MAX_COLUMNS, len(names))):
+        best = None
+        for j in range(len(names)):
+            if j in chosen:
+                continue
+            cols = chosen + [j]
+            rows = ~np.isnan(X[:, cols]).any(axis=1)
+            if rows.mean() < FORMULA_MIN_COMPLETE:
+                continue
+            r2 = _held_out_r2(X[rows][:, cols], y[rows])
+            if best is None or r2 > best[1]:
+                best = (j, r2, rows)
+        if best is None:
+            return None
+        chosen.append(best[0])
+        if best[1] >= FORMULA_R2:
+            rows = best[2]
+            coef, *_ = np.linalg.lstsq(np.column_stack([X[rows][:, chosen], np.ones(rows.sum())]), y[rows], rcond=None)
+            return {"target": target, "r2": round(best[1], 4), "rows": int(rows.sum()),
+                    "weights": {names[j]: round(float(w), 3) for j, w in zip(chosen, coef[:-1])},
+                    "constant": round(float(coef[-1]), 3)}
+    return None
+
+
+def formula_target(df: pd.DataFrame, target: str, problem_type: str, suspects: set[str]) -> str | None:
+    """The number to check for a formula: a regression target itself; for a
+    class target, the most finely measured numeric column that alone decides
+    it (a leakage suspect), if there is one."""
+    if problem_type != "classification":
+        return target
+    numbers = [c for c in suspects if c in df.columns and is_numeric_dtype(df[c]) and not is_bool_dtype(df[c])
+               and df[c].nunique(dropna=True) >= PARENT_MIN_UNIQUE]
+    return min(numbers, key=lambda c: (-df[c].nunique(dropna=True), c)) if numbers else None
+
+
+def describe_formula(target: str, formula: dict) -> str:
+    """The formula as text, and what it means for `target`."""
+    terms = " ".join(f"{'-' if w < 0 else '+'} {abs(w):g} x {c}" for c, w in formula["weights"].items())
+    sign = "-" if formula["constant"] < 0 else "+"
+    text = (f"{formula['target']} ~ {terms.lstrip('+ ')} {sign} {abs(formula['constant']):g} "
+            f"(held-out R2 {formula['r2']:.4f} on {formula['rows']} rows)")
+    if formula["target"] != target:
+        text = f"{target} is decided by {formula['target']}, and {text}"
+    return text
 
 
 def audit_dataset(run_id: str, target: str, problem_type: str, df: pd.DataFrame | None = None) -> dict:
@@ -246,6 +337,20 @@ def audit_dataset(run_id: str, target: str, problem_type: str, df: pd.DataFrame 
             "before the outcome and is not derived from the target; otherwise the model's score is not real.",
             c, single_feature_score=round(score, 4), metric=metric,
         ))
+
+    # -- leakage through a formula ----------------------------------------------
+    # Beyond the single suspects already flagged: columns that rebuild the target together.
+    suspects = {f["column"] for f in findings if f["check"] == "leakage_suspect"}
+    number = formula_target(sample, target, problem_type, suspects)
+    if number is not None:
+        formula = formula_leak(sample, number, [c for c in features if c not in suspects])
+        if formula:
+            findings.append(_finding(
+                "leakage_formula", "critical",
+                f"These columns rebuild the target by plain arithmetic: {describe_formula(target, formula)}. A model "
+                "given all of them adds them up instead of predicting; check when each one is known.",
+                None, formula=formula,
+            ))
 
     return _report(run_id, target, problem_type, n, df, class_balance, imbalance_info, findings)
 

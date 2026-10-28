@@ -124,7 +124,7 @@ export interface TuningTrial {
 export interface AnalysisResult {
   status?: string;
   notes?: string[];
-  prediction_time?: string | null; // null: not stated, so anything recorded before the outcome was usable
+  prediction_time?: string | null; // null: not stated, so anything known before the final step toward the outcome was usable
   summary?: string;
   findings?: { finding: string; evidence: string; severity: "info" | "warning" | "critical"; verified?: boolean }[];
   open_questions?: string[];

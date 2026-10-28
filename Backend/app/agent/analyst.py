@@ -7,7 +7,9 @@ the model, cleaning the data needs (codes that mean missing, target labels
 written several ways, number codes that are really categories, dates worth
 turning into calendar parts), findings with evidence, and open questions. Each
 decision is checked against the data in code before the pipeline acts on it,
-and every code cell and output is kept for the run's audit log.
+including whether the columns it keeps rebuild the target by plain arithmetic
+(sent back once to resolve, then flagged as critical), and every code cell and
+output is kept for the run's audit log.
 """
 import copy
 import dataclasses
@@ -23,6 +25,7 @@ from app import storage
 from app.agent.report import ungrounded_numbers
 from app.config import settings
 from app.llm import LLMClient, LLMUnavailable, ToolSpec
+from app.pipeline.audit import describe_formula, formula_leak, formula_target
 from app.pipeline.sampling import SAMPLE_ROWS
 from app.training.runtime import DATE_PARTS, date_part, is_code, parse_dates
 
@@ -37,6 +40,7 @@ MAX_CODES_PER_COLUMN = 10
 MAX_CATEGORY_LEVELS = 1_000
 MIN_DATE_SHARE = 0.9  # of a column's values that must read as dates
 MAX_TEXT = 400
+MAX_FORMULA_REVISIONS = 1  # times a submission is sent back for kept columns that rebuild the target
 
 RUN_PYTHON = ToolSpec(
     name="run_python",
@@ -156,6 +160,8 @@ What you submit, and what happens to it:
 - missing_value_codes, label_merges, categorical_columns and date_features are applied to training and to
   every future prediction, once the pipeline has checked each one against the data.
 - data_dictionary, findings, open_questions and summary are shown to the user and feed the written report.
+- Before it is accepted, the columns you keep are checked for rebuilding the target by plain arithmetic (a
+  formula of a few columns). If they do, the formula comes back to you once to resolve.
 
 {tools_section}
 
@@ -169,8 +175,9 @@ How to work
    - What the columns that matter mean, how they relate to each other and to the target, and which ones
      are known before the outcome.
 3. Investigate what the profile and audit can't settle on their own:
-   - Leakage: features that are a consequence of the target, derived from it, or recorded at or after the outcome.
-     Treat every audit "leakage_suspect" as an open case and show what the data says about it.
+   - Leakage: features that are a consequence of the target, derived from it, or recorded at or after the outcome
+     (without a stated prediction time, also once the final step toward it has begun; see above).
+     Treat every audit "leakage_suspect" and "leakage_formula" as an open case and show what the data says about it.
    - Identifiers, row numbers, and timestamps that could carry signal they shouldn't.
    - Codes that stand for missing values (-1, 999, -999, "N/A", "?", "unknown"): count them.
    - Target labels that are one class written several ways ("Yes"/"yes"/"Y").
@@ -197,20 +204,31 @@ PREDICTION_TIME_STATED = """The user said when the model will make its predictio
 given: drop every column that isn't known yet at that moment (reason not_available_at_prediction_time),
 and keep every column that is, unless it leaks the target."""
 
-PREDICTION_TIME_UNSTATED = """The user didn't say when the model will make its predictions, so don't assume a moment for them.
-The model may use anything recorded before the outcome: drop what is derived from the target or recorded
-at or after the outcome (reason leakage), and keep what is recorded before it, even a column that is only
-known after some earlier event (a departure delay, when the target is the arrival delay). Name those
-columns in open_questions, so the user can state a prediction time and retrain without them."""
+PREDICTION_TIME_UNSTATED = """The user didn't say when the model will make its predictions, so don't assume a moment for them,
+but the model must still make a real prediction. Drop (reason leakage) what is derived from the target, what is
+recorded at or after the outcome, and what only becomes known once the final step toward the outcome has begun,
+when almost nothing is left to predict. For a flight's gate-arrival delay the steps are departure, takeoff,
+touchdown and arrival at the gate; the final one starts at touchdown, so the landing time and the time in the
+air go along with the taxi-in. Show with the data how much of the target those columns settle. Keep what is
+recorded at earlier steps, even a column only known after some earlier event (the departure delay, for that
+arrival delay), and name those columns in open_questions, so the user can state a prediction time and retrain
+without them."""
 
 TOOLS_WITH_SANDBOX = """Tools
 - run_python(code): run pandas code against the run's working data (`df`) in an isolated sandbox. Budget: {budget} runs.
-- submit_analysis(...): submit your final analysis exactly once."""
+- submit_analysis(...): submit your final analysis, once unless it is sent back."""
 
 TOOLS_WITHOUT_SANDBOX = """Tools
-- submit_analysis(...): submit your final analysis exactly once.
+- submit_analysis(...): submit your final analysis, once unless it is sent back.
 The code sandbox is unavailable for this run, so base your analysis on the profile and audit alone,
 and state in open_questions what you could not verify."""
+
+FORMULA_REVISION = """Not accepted yet: the columns you keep still rebuild the target by plain arithmetic.
+{formula}.
+A model given all of them adds them up instead of predicting. Decide when each one is known. Drop those only known
+once the final step toward the outcome has begun (or, if the user stated a prediction time, those not known by
+then), along with any column recorded at the same moment. If every one of them is known in time, keep them and
+say why in open_questions. Then call submit_analysis again with your complete analysis."""
 
 
 def _compact_profile(profile: dict) -> dict:
@@ -469,6 +487,18 @@ def _mark_unverified(plan: dict, evidence_corpus: dict, names: list[str]) -> Non
     plan["summary_verified"] = bool(plan["summary"]) and not ungrounded_numbers(plan["summary"], evidence_corpus, names)
 
 
+def _formula_in_kept(work: pd.DataFrame, target: str, problem_type: str, columns: list[str], drops: set,
+                     audit: dict) -> dict | None:
+    """A formula by which the columns left after `drops` still rebuild the
+    target (or, for a class target, the number that decides it); see
+    audit.formula_leak."""
+    suspects = {f.get("column") for f in audit.get("findings", []) if f.get("check") == "leakage_suspect"}
+    number = formula_target(work, target, problem_type, suspects)
+    if number is None:
+        return None
+    return formula_leak(work, number, [c for c in columns if c not in drops and c not in (target, number)])
+
+
 def run_analyst(
     run_id: str,
     target: str,
@@ -527,6 +557,7 @@ def run_analyst(
     nudges = 0
     deadline = started + settings.agent_time_budget_seconds
     submitted = None
+    revisions = 0
 
     try:
         for _ in range(settings.agent_max_tool_calls + MAX_NUDGES + 4):
@@ -544,6 +575,20 @@ def run_analyst(
                     if tc.arguments is None:
                         transcript.append({"role": "tool", "tool_call_id": tc.id,
                                            "content": "ERROR: arguments were not valid JSON. Call submit_analysis again."})
+                        continue
+                    formula = None
+                    if revisions < MAX_FORMULA_REVISIONS:
+                        proposed = tc.arguments.get("drop_columns")
+                        drops = ({d.get("column") for d in proposed if isinstance(d, dict)}
+                                 if isinstance(proposed, list) else set())
+                        formula = _formula_in_kept(work, target, detection["problem_type"], columns, drops, audit)
+                    if formula:
+                        revisions += 1
+                        message = FORMULA_REVISION.format(formula=describe_formula(target, formula))
+                        outputs_seen.append(message)
+                        result["notes"].append("Sent the analysis back once: the columns it kept rebuilt the target "
+                                               f"by plain arithmetic (held-out R2 {formula['r2']:.4f}).")
+                        transcript.append({"role": "tool", "tool_call_id": tc.id, "content": message})
                         continue
                     submitted = tc.arguments
                     break
@@ -590,6 +635,16 @@ def run_analyst(
     evidence_corpus = {"profile": profile, "audit": audit, "detection": detection, "sample": sample,
                        "outputs": outputs_seen}
     _mark_unverified(plan, evidence_corpus, columns)
+    # Still there after the send-back: say so wherever the result is read. The
+    # numbers are the pipeline's own, so the finding counts as verified.
+    formula = _formula_in_kept(work, target, plan["problem_type"], columns,
+                               {d["column"] for d in plan["drop_columns"]}, audit)
+    if formula:
+        plan["findings"].append({
+            "finding": "The columns the model uses still rebuild the target by plain arithmetic, so its score likely "
+                       "overstates what it can predict.",
+            "evidence": describe_formula(target, formula), "severity": "critical", "verified": True,
+        })
     result.update({"status": "completed", "plan": plan, "code_runs": code_runs})
     result["notes"].extend(notes)
     return result

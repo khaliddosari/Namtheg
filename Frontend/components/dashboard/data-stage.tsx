@@ -556,7 +556,7 @@ function ConfigurePanel({
               {shownPredictionTime !== undefined && (
                 <Fact
                   label="Predicting"
-                  value={shownPredictionTime || "Not stated: anything recorded before the outcome"}
+                  value={shownPredictionTime || "Not stated: anything known before the final step toward the outcome"}
                   title={shownPredictionTime ?? undefined}
                   valueClassName={cn(!shownPredictionTime && "font-normal text-muted-foreground")}
                 />
@@ -598,7 +598,7 @@ function ConfigurePanel({
                   className="h-10 lg:h-8"
                 />
                 <FieldDescription className="text-xs lock-short:hidden">
-                  Columns not known yet at that moment are left out. Blank: anything recorded before the outcome can be used.
+                  Columns not known yet at that moment are left out. Blank: anything known before the final step toward the outcome can be used.
                 </FieldDescription>
               </Field>
             </>

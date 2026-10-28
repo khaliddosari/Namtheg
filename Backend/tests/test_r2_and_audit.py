@@ -12,7 +12,7 @@ from app import main, r2, storage
 from app.config import settings
 from app.main import app as fastapi_app
 from app.pipeline import audit, imbalance
-from tests.conftest import INSURANCE_CSV
+from tests.conftest import INSURANCE_CSV, flight_times
 
 
 class FakeS3:
@@ -105,6 +105,26 @@ def test_leakage_audit_flags_leaks_without_training_models(uploaded_run):
 
     # Model fitting happens only on the GPU trainer: the audit uses no ML library.
     assert "sklearn" not in inspect.getsource(audit)
+
+
+def test_columns_that_add_up_to_the_target_are_flagged_together():
+    df = flight_times()
+    report = audit.audit_dataset("formula", "ArrDelay", "regression", df=df)
+    assert not any(f["check"] == "leakage_suspect" for f in report["findings"])  # none leaks alone
+    formula = next(f["formula"] for f in report["findings"] if f["check"] == "leakage_formula")
+    assert formula["r2"] >= audit.FORMULA_R2
+    assert {"DepDelay", "TaxiOut", "AirTime", "CRSElapsedTime"} <= set(formula["weights"])
+    assert all(abs(abs(w) - 1) < 0.05 for w in formula["weights"].values())  # parts of a sum
+    # Without the time in the air, what is left predicts rather than adds up.
+    assert audit.formula_leak(df, "ArrDelay", ["DepDelay", "TaxiOut", "CRSElapsedTime", "Distance"]) is None
+
+    # A late flag is decided by the delay, so the delay is what gets checked for a formula.
+    df["ArrDel15"] = (df["ArrDelay"] >= 15).astype(int)
+    assert audit.formula_target(df, "ArrDel15", "classification", {"ArrDelay"}) == "ArrDelay"
+    assert audit.formula_target(df, "ArrDel15", "classification", set()) is None
+    assert audit.formula_target(df, "ArrDelay", "regression", set()) == "ArrDelay"
+    text = audit.describe_formula("ArrDel15", formula)
+    assert text.startswith("ArrDel15 is decided by ArrDelay, and ArrDelay ~ ") and "held-out R2" in text
 
 
 def test_imbalance_assessment_thresholds():
