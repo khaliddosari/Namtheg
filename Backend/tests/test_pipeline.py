@@ -256,7 +256,7 @@ def test_cancel_and_diagnostics(client, uploaded_run):
     client.post(f"/runs/{uploaded_run}/start", json={"target": "charges"})
     assert client.post(f"/runs/{uploaded_run}/cancel").status_code == 409  # local runs can't be cancelled
     diag = client.get(f"/runs/{uploaded_run}/diagnostics").json()
-    assert diag["status"] == "queued" and diag["gpu"] == "NVIDIA H200 (requested)"
+    assert diag["status"] == "queued" and diag["gpu"] == "NVIDIA H200"
     assert "speed" not in diag and "cpu" not in diag  # no invented numbers
 
 

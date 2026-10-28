@@ -442,7 +442,7 @@ def get_run_diagnostics(run_id: str) -> dict:
         "status": s.get("status"),
         "stage": s.get("stage"),
         "task": s.get("task"),
-        "gpu": hardware.get("gpu") or f"NVIDIA {TRAINING_GPU} (requested)",
+        "gpu": hardware.get("gpu") or f"NVIDIA {TRAINING_GPU}",
         "gpu_calls": len(s.get("gpu_calls") or []),
         "elapsed_seconds": round(time.time() - queued_at) if queued_at else None,
     }
