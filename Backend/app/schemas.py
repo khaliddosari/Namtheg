@@ -64,6 +64,11 @@ class RunResult(BaseModel):
 class StartRunRequest(BaseModel):
     task: Literal["auto", "classification", "regression"] = "auto"
     target: Optional[str] = Field(None, description="The column to predict.")
+    prediction_time: Optional[str] = Field(
+        None, max_length=300,
+        description="When the model will make its predictions, in the user's words (e.g. 'when the flight "
+                    "leaves the gate'). Columns not known by then are left out.",
+    )
 
 
 class DirectUploadRequest(BaseModel):

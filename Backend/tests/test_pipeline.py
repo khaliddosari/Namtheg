@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import jobs, storage
-from app.agent import orchestrator
+from app.agent import analyst, orchestrator
 from app.pipeline import export, train
 from tests.conftest import INSURANCE_CSV, ScriptedLLM
 
@@ -80,6 +80,26 @@ def test_full_run_with_analyst(uploaded_run, monkeypatch):
     assert {"rmse", "mae", "test_score", "train_score"} <= set(extra)
     assert result["downloads"] == ["cleaned_csv", "model"]
     assert storage.read_status(uploaded_run)["stage"] == "done"
+
+
+def test_the_analyst_gets_the_stated_prediction_time(uploaded_run, monkeypatch):
+    llm = ScriptedLLM(ANALYST_SCRIPT)
+    _use_llm(monkeypatch, llm)
+    spec = {"task": "auto", "target": "charges", "prediction_time": "when the quote is issued"}
+    result = orchestrator.run_agent(uploaded_run, spec)
+    assert result["status"] == "succeeded", result.get("error")
+    assert '"prediction_time": "when the quote is issued"' in llm.analyst_transcripts[0][0]["content"]
+    assert result["extra"]["analysis"]["prediction_time"] == "when the quote is issued"
+
+
+def test_dropping_a_column_for_its_timing_needs_a_stated_prediction_time():
+    def reasons(tool):
+        return tool.parameters["properties"]["drop_columns"]["items"]["properties"]["reason"]["enum"]
+
+    timing = "not_available_at_prediction_time"
+    assert timing not in reasons(analyst.submit_analysis_tool(None))
+    assert timing in reasons(analyst.submit_analysis_tool("when the quote is issued"))
+    assert timing in reasons(analyst.SUBMIT_ANALYSIS)  # the shared spec is left as it was
 
 
 def test_hallucinated_summary_falls_back_to_template(uploaded_run, monkeypatch):
@@ -188,6 +208,15 @@ def test_start_validates_the_task(client, uploaded_run, body, message):
 def test_a_target_is_required(client, uploaded_run):
     r = client.post(f"/runs/{uploaded_run}/start", json={})
     assert r.status_code == 400 and "target column" in r.text
+
+
+def test_start_passes_on_the_prediction_time(client, uploaded_run):
+    body = {"target": "charges", "prediction_time": "x" * 301}
+    assert client.post(f"/runs/{uploaded_run}/start", json=body).status_code == 422
+    body["prediction_time"] = "  when the quote\n is issued "
+    assert client.post(f"/runs/{uploaded_run}/start", json=body).status_code == 200
+    assert client.started[-1] == {"task": "auto", "target": "charges", "prediction_time": "when the quote is issued"}
+    assert storage.read_status(uploaded_run)["prediction_time"] == "when the quote is issued"
 
 
 def test_cancel_and_diagnostics(client, uploaded_run):

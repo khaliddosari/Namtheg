@@ -87,6 +87,7 @@ export interface RunStatus {
   task?: Task;
   stage?: string;
   target?: string | null;
+  prediction_time?: string | null; // when the user said predictions are made
   error?: string;
 }
 
@@ -95,6 +96,7 @@ export type Task = "auto" | "classification" | "regression";
 export interface StartRunBody {
   task: Task;
   target?: string;
+  prediction_time?: string; // optional; columns not known by then are left out
 }
 
 export interface ModelScore {
@@ -122,6 +124,7 @@ export interface TuningTrial {
 export interface AnalysisResult {
   status?: string;
   notes?: string[];
+  prediction_time?: string | null; // null: not stated, so anything recorded before the outcome was usable
   summary?: string;
   findings?: { finding: string; evidence: string; severity: "info" | "warning" | "critical"; verified?: boolean }[];
   open_questions?: string[];

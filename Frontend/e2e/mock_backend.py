@@ -39,7 +39,7 @@ PREVIEW[3]["bmi"] = None
 # What the analyst agent understood (Backend/app/agent/analyst.py), on regression results.
 ANALYST_EXTRA = {
     "analysis": {
-        "status": "completed", "code_runs": 4, "seconds": 41.6,
+        "status": "completed", "code_runs": 4, "seconds": 41.6, "prediction_time": None,
         "summary": "Smoking status dominates charges; BMI and age add steady increases.",
         "data_dictionary": {
             "row_meaning": "One insured person.",
@@ -281,8 +281,12 @@ async def start(rid: str, request: Request):
         return err(400, "Choose the target column.")
     if target not in COLUMNS:
         return err(400, f"Target column {target!r} is not in the dataset.")
+    prediction_time = " ".join(str(body.get("prediction_time") or "").split()) or None
+    if prediction_time and len(prediction_time) > 300:
+        return err(422, "prediction_time: at most 300 characters.")
     kind = "reg" if target in NUMERIC else "clf"
-    r.update(status="queued", task=task, target=target, queued_at=time.time(), started_at=time.time() + 1.5, kind=kind)
+    r.update(status="queued", task=task, target=target, prediction_time=prediction_time, queued_at=time.time(),
+             started_at=time.time() + 1.5, kind=kind)
     r.pop("stage", None)
     r.pop("error", None)
     link(request, rid)
@@ -343,7 +347,8 @@ def result_for(rid, r):
                 "downloads": ["cleaned_csv", "model"],
                 "extra": {"train_score": 0.9046, "test_score": 0.8691, "overfit_gap": 0.031, "hardware": {"gpu": "NVIDIA H200"},
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats,
-                          "tuning_trials": trials_for("r2", False), **ANALYST_EXTRA}}
+                          "tuning_trials": trials_for("r2", False), **ANALYST_EXTRA,
+                          "analysis": {**ANALYST_EXTRA["analysis"], "prediction_time": r.get("prediction_time")}}}
     if kind == "clf":
         models = [("LGBMClassifier", 0.9612, 0.0081), ("XGBClassifier", 0.9577, 0.0093), ("RandomForestClassifier", 0.9533, 0.0102), ("LogisticRegression", 0.9401, 0.0110)]
         return {**common, "problem_type": "classification", "accuracy_score": 0.9612, "score_metric": "accuracy", "higher_is_better": True,

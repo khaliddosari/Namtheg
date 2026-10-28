@@ -16,7 +16,7 @@ class TaskError(ValueError):
     """The requested task doesn't fit the data. The message is safe to show the user."""
 
 
-def resolve(run_id: str, task: str, target: str | None) -> dict:
+def resolve(run_id: str, task: str, target: str | None, prediction_time: str | None = None) -> dict:
     if task not in TASKS:
         raise TaskError(f"Unknown task {task!r}. Choose one of: {', '.join(TASKS)}.")
     ingest = storage.read_json(run_id, "ingest.json") or {}
@@ -33,4 +33,7 @@ def resolve(run_id: str, task: str, target: str | None) -> dict:
         if task == "classification" and y.nunique() > MAX_CLASSES:
             raise TaskError(f"{target!r} has {y.nunique()} distinct values; classification supports up to "
                             f"{MAX_CLASSES}. Did you mean regression?")
-    return {"task": task, "target": target}
+    spec = {"task": task, "target": target}
+    if prediction_time and prediction_time.strip():
+        spec["prediction_time"] = " ".join(prediction_time.split())
+    return spec

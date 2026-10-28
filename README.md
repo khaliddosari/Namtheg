@@ -48,7 +48,7 @@ This repository is structured as a modern monorepo separating frontend UI from b
 
 ## 🧠 AutoML Pipeline Flow
 
-Upload a table (CSV, Excel, Parquet, JSON), then pick the column to predict:
+Upload a table (CSV, Excel, Parquet, JSON), then pick the column to predict and, optionally, say when the model will make its predictions (columns not known by then are left out):
 
 | Task | Models (all trained on NVIDIA H200 GPUs, in parallel) |
 |------|--------------------------------------------------------|

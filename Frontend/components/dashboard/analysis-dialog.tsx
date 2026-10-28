@@ -86,11 +86,16 @@ export function AnalysisDialog({
           tabIndex={0}
           className="-mx-1 max-h-[60vh] space-y-5 overflow-y-auto rounded-md px-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
-          {(dictionary || sample?.sampled) && (
+          {(dictionary || sample?.sampled || analysis.prediction_time !== undefined) && (
             <Section title="The data">
               <dl className="space-y-1.5">
                 {dictionary?.row_meaning && <Row label="One row">{dictionary.row_meaning}</Row>}
                 {dictionary?.target_meaning && <Row label={result.target ?? "Target"}>{dictionary.target_meaning}</Row>}
+                {analysis.prediction_time !== undefined && (
+                  <Row label="Predicting">
+                    {analysis.prediction_time ?? "Not stated, so the model could use anything recorded before the outcome."}
+                  </Row>
+                )}
                 {sample?.sampled && (
                   <Row label="Rows">
                     Trained on a random sample of {sample.rows_used.toLocaleString()} of {sample.rows_total.toLocaleString()} rows,

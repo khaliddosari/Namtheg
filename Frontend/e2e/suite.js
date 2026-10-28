@@ -235,6 +235,20 @@ test("configure: predicting a column is the only option", async (page, x) => {
   await shot(page, "configure");
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
+test("configure: a stated prediction time reaches the run and is shown once started", async (page, x) => {
+  await page.goto(APP);
+  await uploadCsv(page);
+  await page.locator("#prediction-time").fill("  when the quote   is issued ");
+  await page.getByRole("button", { name: "Start training" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("stage") === "training");
+  const run = new URL(page.url()).searchParams.get("run");
+  await page.goto(`${APP}/?run=${run}&stage=data`);
+  const predicting = inStage(page, "data").locator("dt", { hasText: "Predicting" }).locator("xpath=following-sibling::dd");
+  await predicting.waitFor();
+  const shown = await predicting.innerText();
+  x.ok(shown === "when the quote is issued", `the run should show the stated time, got ${shown}`);
+}, { allow: [{ status: 409, url: "/uploads/direct" }] });
+
 // ---------- training
 test("training: start slides to training, tracks live stages, lands on results", async (page, x) => {
   await page.goto(APP);

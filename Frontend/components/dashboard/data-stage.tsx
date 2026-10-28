@@ -141,6 +141,7 @@ export function DataStage({
         started={started}
         target={target}
         shownTarget={shownTarget}
+        shownPredictionTime={status?.prediction_time}
         setTarget={setTarget}
         onStarted={onStarted}
         goToStage={goToStage}
@@ -476,6 +477,7 @@ function ConfigurePanel({
   started,
   target,
   shownTarget,
+  shownPredictionTime,
   setTarget,
   onStarted,
   goToStage,
@@ -487,12 +489,14 @@ function ConfigurePanel({
   started: boolean;
   target: string;
   shownTarget: string;
+  shownPredictionTime: string | null | undefined; // undefined: a run from before the field existed
   setTarget: (target: string) => void;
   onStarted: (status: RunStatus) => void;
   goToStage: (key: StageKey) => void;
   className?: string;
 }) {
   const columns = preview?.columns ?? [];
+  const [predictionTime, setPredictionTime] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -500,7 +504,11 @@ function ConfigurePanel({
   const blocker = !target ? "Pick a target column to start." : null;
   const canStart = !blocker;
 
-  const body = (): StartRunBody => ({ task: "auto", target });
+  const body = (): StartRunBody => ({
+    task: "auto",
+    target,
+    ...(predictionTime.trim() && { prediction_time: predictionTime.trim() }),
+  });
 
   const start = async () => {
     if (!runId || !canStart) return;
@@ -538,36 +546,62 @@ function ConfigurePanel({
       ) : (
         <>
           {started ? (
-            <dl>
+            <dl className="flex flex-col gap-2">
               <Fact
                 label="Target column"
                 value={shownTarget || "-"}
                 title={shownTarget}
                 valueClassName="font-mono text-base"
               />
+              {shownPredictionTime !== undefined && (
+                <Fact
+                  label="Predicting"
+                  value={shownPredictionTime || "Not stated: anything recorded before the outcome"}
+                  title={shownPredictionTime ?? undefined}
+                  valueClassName={cn(!shownPredictionTime && "font-normal text-muted-foreground")}
+                />
+              )}
             </dl>
           ) : (
-            <Field>
-              <FieldLabel htmlFor="target-column">Target column</FieldLabel>
-              <Combobox
-                items={columns}
-                value={target || null}
-                onValueChange={(v) => v && setTarget(v as string)}
-              >
-                <ComboboxInput id="target-column" placeholder="Search columns" className="h-10 w-full font-mono lg:h-8" />
-                <ComboboxContent>
-                  <ComboboxEmpty>No column matches.</ComboboxEmpty>
-                  <ComboboxList>
-                    {(col: string) => (
-                      <ComboboxItem key={col} value={col} className="font-mono">
-                        {col}
-                      </ComboboxItem>
-                    )}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
-              <FieldDescription className="text-xs lock-short:hidden">The column the model learns to predict.</FieldDescription>
-            </Field>
+            <>
+              <Field>
+                <FieldLabel htmlFor="target-column">Target column</FieldLabel>
+                <Combobox
+                  items={columns}
+                  value={target || null}
+                  onValueChange={(v) => v && setTarget(v as string)}
+                >
+                  <ComboboxInput id="target-column" placeholder="Search columns" className="h-10 w-full font-mono lg:h-8" />
+                  <ComboboxContent>
+                    <ComboboxEmpty>No column matches.</ComboboxEmpty>
+                    <ComboboxList>
+                      {(col: string) => (
+                        <ComboboxItem key={col} value={col} className="font-mono">
+                          {col}
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+                <FieldDescription className="text-xs lock-short:hidden">The column the model learns to predict.</FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="prediction-time">
+                  When will you predict? <span className="font-normal text-muted-foreground">Optional</span>
+                </FieldLabel>
+                <Input
+                  id="prediction-time"
+                  value={predictionTime}
+                  onChange={(e) => setPredictionTime(e.target.value)}
+                  maxLength={300}
+                  placeholder="e.g. when the order is placed"
+                  className="h-10 lg:h-8"
+                />
+                <FieldDescription className="text-xs lock-short:hidden">
+                  Columns not known yet at that moment are left out. Blank: anything recorded before the outcome can be used.
+                </FieldDescription>
+              </Field>
+            </>
           )}
 
           <div className="mt-auto flex flex-wrap items-center justify-end gap-3 pt-1">

@@ -61,7 +61,7 @@ def beats_baseline(metrics: dict) -> bool | None:
 
 
 def _facts(task, target, metrics, beats, *, fe_report=None, audit_report=None, analysis=None,
-           imbalance_plan=None, sample=None) -> dict:
+           imbalance_plan=None, sample=None, prediction_time=None) -> dict:
     """Every number the written summary is allowed to cite."""
     extra = metrics["extra"]
     critical, warnings = [], []
@@ -75,6 +75,7 @@ def _facts(task, target, metrics, beats, *, fe_report=None, audit_report=None, a
     facts = {
         "task": task,
         "target": target,
+        "prediction_time": prediction_time,
         "model": {
             "name": metrics["model_name"],
             "metric": metrics["score_metric"],
@@ -162,7 +163,7 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
 
         _stage(run_id, "analysis")
         analysis = analyst.run_analyst(run_id, target, prof, detection, audit_report, llm, sandbox_future,
-                                       work=work, sample=sample)
+                                       work=work, sample=sample, prediction_time=spec.get("prediction_time"))
     finally:
         _close_when_ready(sandbox_future)
         if executor is not None:
@@ -200,7 +201,8 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
 
     beats = beats_baseline(metrics)
     facts = _facts(problem_type, target, metrics, beats, fe_report=fe_report, audit_report=audit_report,
-                   analysis=analysis, imbalance_plan=imbalance_plan, sample=sample)
+                   analysis=analysis, imbalance_plan=imbalance_plan, sample=sample,
+                   prediction_time=spec.get("prediction_time"))
     names = [c["name"] for c in prof["columns"]] + [m["name"] for m in facts["candidates"]] + [target]
     return _finish(run_id, problem_type, target, problem_type, metrics, facts, names, llm,
                    ["cleaned_csv", "model"], {
@@ -209,6 +211,7 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
                        "sample": sample,
                        "cleaning_applied": fe_report["cleaning_applied"],
                        "analysis": {k: analysis.get(k) for k in ("status", "notes", "code_runs", "seconds")} | {
+                           "prediction_time": spec.get("prediction_time"),
                            "problem_type_source": plan["problem_type_source"],
                            "summary": plan["summary"],
                            "findings": plan["findings"],
