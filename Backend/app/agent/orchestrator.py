@@ -198,7 +198,7 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
     export.export_cleaned_csv(run_id)
 
     _stage(run_id, "visualize")
-    visualize.generate_visualization(run_id, target, problem_type)
+    visuals = visualize.generate_visualization(run_id, target, problem_type)
 
     beats = beats_baseline(metrics)
     facts = _facts(problem_type, target, metrics, beats, fe_report=fe_report, audit_report=audit_report,
@@ -206,7 +206,8 @@ def _tables(run_id: str, spec: dict, llm: LLMClient) -> dict:
                    prediction_time=spec.get("prediction_time"))
     names = [c["name"] for c in prof["columns"]] + [m["name"] for m in facts["candidates"]] + [target]
     return _finish(run_id, problem_type, target, problem_type, metrics, facts, names, llm,
-                   ["cleaned_csv", "model"], {
+                   ["cleaned_csv", "model", "graphs"], {
+                       "graphs": visuals["graphs"],
                        "imbalance": imbalance_plan,
                        "audit": audit_report,
                        "sample": sample,

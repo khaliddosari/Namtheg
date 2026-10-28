@@ -178,6 +178,15 @@ are checked without training any model, so the audit itself never needs a GPU).
 The written summary states the winning model, its score against the baseline, and the single most
 relevant caveat, using only numbers verified against the run's own computed results (see §0).
 
+Every graph and table the held-out test split allows is drawn once after training and kept with the
+run: for classification the confusion matrix (counts, and the share of each actual class), per-class
+precision, recall and F1, ROC and precision-recall curves (when the model gives class
+probabilities), and actual against predicted class counts; for regression predicted against actual,
+the residuals and the error distribution; for both the held-out metrics, feature importance, the
+model comparison and the tuning progress. They download together as a zip, the graphs on a dark
+background and the tables as CSV. Runs from before this get theirs the first time their result is
+read, without the curves, which need probabilities those runs didn't keep.
+
 ### 5.6 Deployment and Downloads
 - A trained model can be deployed to a shared, always-on inference endpoint that serves predictions
   for every run from one Modal app, so deploying a new model is a file upload, not a new deployment.
@@ -204,9 +213,10 @@ relevant caveat, using only numbers verified against the run's own computed resu
   and a run's link without a stage opens wherever the run has got to.
 - The training stage shows the run's elapsed time as a clock that only counts up, a second at a
   time, on the browser's own clock from the earliest start the server's reports imply.
-- The results report exports as a PNG and as an A4 PDF laid out as a document: a header naming the
-  run, dataset and target, every card at full height with no text cut off, and PDF pages that
-  break between cards.
+- The results' graphs card pages through every graph and table (§5.5) with arrows. The report
+  exports as an A4 PDF laid out as a document: a header naming the run, dataset and target, the
+  graph on screen, every card at full height with no text cut off, and pages that break between
+  cards. All the graphs download as one zip.
 - The prediction form lists each category column's values from training, so a typo or a capital
   letter can't send a value the model never saw; numbers are typed.
 - On a desktop window each stage fills the screen: cards that hold little are sized to their
@@ -337,3 +347,7 @@ relevant caveat, using only numbers verified against the run's own computed resu
   formula can't run code wherever the model runs. The prediction form now lists each category
   column's training values instead of taking free text, where "Male" or "yes " silently became a
   category the model had never seen.
+- A run now draws every graph and table its test split allows (§5.5) instead of one plot, keeps
+  them, and the trainer returns each test row's class probabilities for the ROC and
+  precision-recall curves. The dashboard pages through them in one card; the PDF report shows the
+  one on screen, and the report's PNG export was replaced by a download of all the graphs.

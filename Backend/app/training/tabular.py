@@ -606,6 +606,9 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         "preprocessing": describe_preprocessor(final[0]),
         "y_test": y_test.tolist(),
         "y_pred": test_pred.tolist(),
+        # Each test row's class probabilities (or, for a two-class SVM, its margin), for the ROC and
+        # precision-recall graphs.
+        "y_score": proba.tolist() if proba is not None else decision.tolist() if decision is not None else None,
         "bundle_bytes": buf.getvalue(),
         "weights_format": weights_format,
         "weights_bytes": weights,

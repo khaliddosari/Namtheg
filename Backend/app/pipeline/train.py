@@ -98,7 +98,7 @@ def _frame_bytes(frame: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
-def _save_labels(run_id: str, y_test, y_pred, labels) -> None:
+def _save_labels(run_id: str, y_test, y_pred, labels, y_score=None) -> None:
     y_test, y_pred = np.asarray(y_test), np.asarray(y_pred)
     if labels:
         # Plot real class names, not the integer codes the models trained on.
@@ -106,6 +106,8 @@ def _save_labels(run_id: str, y_test, y_pred, labels) -> None:
         y_test, y_pred = names[y_test.astype(int)], names[y_pred.astype(int)]
     _save_array(run_id, "y_test.npy", y_test)
     _save_array(run_id, "y_pred.npy", y_pred)
+    if y_score is not None:  # columns in class_labels order
+        _save_array(run_id, "y_score.npy", np.asarray(y_score, dtype=float))
 
 
 def _split_results(results: list, what: str) -> tuple[list[dict], list[str]]:
@@ -168,7 +170,7 @@ def train_tabular(run_id: str, target: str, task: str, imbalance_plan: dict) -> 
         raise RuntimeError("No model trained successfully. " + " | ".join(reasons))
     best = max(winners, key=lambda r: r["cv_mean"])
 
-    _save_labels(run_id, best["y_test"], best["y_pred"], best["class_labels"])
+    _save_labels(run_id, best["y_test"], best["y_pred"], best["class_labels"], best.get("y_score"))
     _save_bytes(run_id, "model.joblib", best["bundle_bytes"])
     weights_file = WEIGHTS_FILES[best["weights_format"]]
     _save_bytes(run_id, weights_file, best["weights_bytes"])

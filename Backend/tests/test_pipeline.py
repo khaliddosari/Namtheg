@@ -78,7 +78,7 @@ def test_full_run_with_analyst(uploaded_run, monkeypatch):
     assert extra["hardware"]["gpu"] == "CPU test harness"
     assert extra["grounding"]["source"] == "llm" and extra["grounding"]["verified"]
     assert {"rmse", "mae", "test_score", "train_score"} <= set(extra)
-    assert result["downloads"] == ["cleaned_csv", "model"]
+    assert result["downloads"] == ["cleaned_csv", "model", "graphs"]
     assert storage.read_status(uploaded_run)["stage"] == "done"
 
 

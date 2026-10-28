@@ -1,5 +1,6 @@
 import json as _json
 import logging
+import re
 import shutil
 import time
 import urllib.error
@@ -268,6 +269,13 @@ def result(run_id: str) -> JSONResponse:
     result = storage.read_json(run_id, "result.json")
     if result is None:
         raise HTTPException(409, "Run has not produced a result yet.")
+    if result.get("status") == "succeeded" and "graphs" not in (result.get("extra") or {}):
+        # A run from before every graph was drawn gets them now, once, from its saved test split.
+        from app.pipeline import visualize
+        try:
+            result = visualize.ensure_graphs(run_id, result)
+        except Exception:
+            log.exception("Couldn't draw the graphs of run %s; serving its result without them", run_id)
     return JSONResponse(result)
 
 
@@ -275,6 +283,7 @@ DOWNLOADS = {
     # kind: (artifact, filename suffix)
     "cleaned_csv": (export.CLEANED_CSV, "_cleaned.csv"),
     "model": (export.MODEL_PACKAGE, "_model.zip"),
+    "graphs": ("graphs.zip", "_graphs.zip"),  # visualize.GRAPHS_ZIP
 }
 
 
@@ -317,6 +326,20 @@ def plot(run_id: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, "Plot not yet generated.")
     return FileResponse(path, media_type="image/png", filename="plot.png")
+
+
+GRAPH_KEY = re.compile(r"[a-z0-9_]{1,40}")
+
+
+@app.get("/runs/{run_id}/graphs/{key}")
+def graph(run_id: str, key: str) -> FileResponse:
+    """One of the run's graphs (see the result's extra.graphs), as a transparent PNG."""
+    if not storage.run_exists(run_id):
+        raise HTTPException(404, "run_id not found")
+    path = storage.artifact_path(run_id, f"graphs/{key}.png") if GRAPH_KEY.fullmatch(key) else None
+    if path is None or not path.exists():
+        raise HTTPException(404, "No such graph for this run.")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.post("/runs/{run_id}/deploy")
