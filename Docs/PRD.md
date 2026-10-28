@@ -65,9 +65,11 @@ uploads a table (CSV, TSV, Excel, Parquet, JSON), and the system:
    plan.
 5. Trains every relevant candidate model in parallel on GPUs, tunes the best one, and compares it
    against a feature-blind baseline.
-6. Writes a short, evidence-grounded explanation of the result.
-7. Offers the cleaned data, the trained model (in a portable, dependency-light format), and, once
-   deployed, a live prediction API, all as downloads or endpoints.
+6. Writes a short, evidence-grounded explanation of the result, and draws every graph and table the
+   held-out test results allow.
+7. Offers the graphs and tables, a PDF report, the cleaned data, the trained model (in a portable,
+   dependency-light format), and, once deployed, a live prediction API, all as downloads or
+   endpoints.
 
 **Classical supervised machine learning only.** Every model is a classical machine-learning model
 that predicts a target column: boosted trees, SVMs, nearest neighbours, and linear models.
@@ -190,9 +192,11 @@ read, without the curves, which need probabilities those runs didn't keep.
 ### 5.6 Deployment and Downloads
 - A trained model can be deployed to a shared, always-on inference endpoint that serves predictions
   for every run from one Modal app, so deploying a new model is a file upload, not a new deployment.
-- Every run offers the cleaned data (CSV) and a model package: the model in a portable format (never
-  a raw library pickle, since those can fail to load on a different build or operating system), a
-  loader, a working prediction script, and a dependency list scoped to only what that model needs.
+- Every run offers its graphs and tables as one zip (§5.5), the cleaned data (CSV) and a model
+  package: the model in a portable format (never a raw library pickle, since those can fail to load
+  on a different build or operating system), a loader, a working prediction script, and a
+  dependency list scoped to only what that model needs. The dashboard also exports the report as a
+  PDF (§5.8).
 
 ### 5.7 Accounts (optional)
 - Signing in is optional: every feature works without an account.
@@ -218,7 +222,8 @@ read, without the curves, which need probabilities those runs didn't keep.
   graph on screen, every card at full height with no text cut off, and pages that break between
   cards. All the graphs download as one zip.
 - The prediction form lists each category column's values from training, so a typo or a capital
-  letter can't send a value the model never saw; numbers are typed.
+  letter can't send a value the model never saw; numbers are typed. Runs trained before the lists
+  existed keep text boxes.
 - On a desktop window each stage fills the screen: cards that hold little are sized to their
   content, and the table, notebook, plot or prediction form takes the rest. On a phone the cards
   stack, with what a person acts on first.

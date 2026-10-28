@@ -29,10 +29,11 @@ Classical supervised machine learning only: no clustering, neural networks, pret
 2. **Task, validated up front** (`pipeline/tasks.py`): bad combinations (e.g. a missing target, a non-numeric regression target) fail in the request, before any GPU time.
 3. **Background job.** The run executes as its own Modal job (`run_job`, 6-hour limit), detached from HTTP, and can be cancelled (`/cancel` also stops its GPU calls).
 4. **Deterministic facts, from one read.** The job reads the full table once; profile, detection, and an audit (leakage suspects via model-free held-out checks, duplicates, imbalance, identifiers, temporal columns) see every row. Tables over 300,000 rows are then cut to one reproducible random sample of 300,000 rows, stratified by the target's classes (`pipeline/sampling.py`). The analyst, data exploration, feature engineering and training all use that same sample, and the final model is trained on it.
-5. **Analyst agent** (`agent/analyst.py`). GPT-6 Sol investigates the working set with pandas code in an isolated sandbox and submits an analysis: a data dictionary (what a row is, what the target and key columns mean, and whether each meaning rests on the data or only on the name), the problem type, columns to drop, and cleaning: codes that mean missing (-999, "?"), target labels written several ways, number codes that are really categories, and date columns to turn into year, month, day, weekday or hour. Each decision is checked against the data in code. The cleaning is applied to training and, by the model itself (`training/runtime.py`), to every prediction, so predictions take raw values. Text whose numbers appear in no tool output is marked `verified: false`.
+5. **Analyst agent** (`agent/analyst.py`). GPT-6 Sol investigates the working set with pandas code in an isolated sandbox and submits an analysis: a data dictionary (what a row is, what the target and key columns mean, and whether each meaning rests on the data or only on the name), the problem type, columns to drop, and cleaning: codes that mean missing (-999, "?"), target labels written several ways, number codes that are really categories, and date columns to turn into year, month, day, weekday or hour. When the user asks for a column the data doesn't have (`new_column` on start), it builds it from the other columns, never the target, as a formula or as ranges of one column; a small parser evaluates it with only arithmetic, comparisons and a few functions, so the request can't run code. Each decision is checked against the data in code. The cleaning and the new column are applied to training and, by the model itself (`training/runtime.py`), to every prediction, so predictions take raw values. Text whose numbers appear in no tool output is marked `verified: false`.
 6. **Imbalance plan, before modelling** (`pipeline/imbalance.py`): balanced class weights inside each training fold and macro-F1 selection when the largest class exceeds 1.5x the smallest. No resampling.
 7. **Parallel GPU training** (`pipeline/train.py` → `training/gpu_app.py`). Model groups run at the same time on separate H200 containers. Fast optimisation: early stopping for boosted trees, Optuna TPE with median pruning (weak trials stop after a fold or two) that ends once 5 trials in a row fail to beat the best by more than its CV noise. cuML runs scikit-learn's SVM/KNN/linear models on the GPU, and a profiler check rejects any call that fell back to CPU. There is no local or CPU fallback anywhere.
 8. **Grounded report** (`agent/report.py`). Every number in the justification must match a computed value, or the text is replaced by a deterministic template.
+9. **Graphs** (`pipeline/visualize.py`). Every graph and table the held-out test split allows is drawn once and kept with the run. Classification: the confusion matrix (counts, and the share of each actual class), per-class precision, recall and F1, ROC and precision-recall curves (from the class probabilities the trainer returns), and actual against predicted class counts. Regression: predicted against actual, residuals and the error distribution. Both: held-out metrics, feature importance, model comparison and tuning progress. The result lists them under `extra.graphs`; a run from before them gets them on its first result read, without the curves.
 
 ### LLMs
 
@@ -45,7 +46,7 @@ A run switches to the fallback when the primary fails, and stays on it for the r
 
 ### Downloads and R2
 
-Every run offers the cleaned data as CSV and a model package: `model.joblib`, `runtime.py` (the same loader the live endpoint uses), a `predict.py` for every task type, `metadata.json`, and a `requirements.txt` listing only what that model needs. Models are stored portably (XGBoost JSON, CatBoost `.cbm`, numpy arrays), never as library pickles that break across builds.
+Every run offers its graphs and tables as a zip (the graphs on a dark background so they read in any viewer, the tables as CSV), the cleaned data as CSV, and a model package: `model.joblib`, `runtime.py` (the same loader the live endpoint uses), a `predict.py` for every task type, `metadata.json`, and a `requirements.txt` listing only what that model needs. Models are stored portably (XGBoost JSON, CatBoost `.cbm`, numpy arrays), never as library pickles that break across builds.
 
 With `R2_*` set, every artifact is mirrored to a private Cloudflare R2 bucket, runs missing locally are restored from it, downloads redirect to presigned URLs that expire after 15 minutes, and files over 30 MB upload straight to the bucket.
 
@@ -83,14 +84,19 @@ python -m pytest tests          # engines run in-process on CPU as a harness; no
 | `POST` | `/upload` (multipart `file`) | Upload a table (≤ 30 MB) → `run_id`, columns, preview, ingest report |
 | `POST` | `/uploads/direct` → `/uploads/{run_id}/complete` | Larger files (≤ 2 GB): presigned PUT straight to R2; `/complete` answers 202 and reads the file in the background, and the run's status turns `uploaded` (or `failed` with the reason) |
 | `GET`  | `/runs/{run_id}/preview` | First 20 rows + column list |
-| `POST` | `/runs/{run_id}/start` | Body `{"task", "target"}`; `{"target": ...}` alone auto-detects classification or regression |
+| `POST` | `/runs/{run_id}/start` | Body `{"task", "target", "new_column"?, "prediction_time"?}`; `{"target": ...}` alone auto-detects classification or regression. `new_column` describes a column to build from the others; `prediction_time` says when predictions are made (the dashboard no longer asks) |
 | `POST` | `/runs/{run_id}/cancel` | Stop the job and its GPU work |
 | `GET`  | `/runs/{run_id}/status` | `queued` → `running` (with `stage`) → `succeeded` / `failed` / `cancelled` |
 | `GET`  | `/runs/{run_id}/diagnostics` | Stage, task, GPU, GPU containers, elapsed time (recorded state only) |
-| `GET`  | `/runs/{run_id}/result` | Final JSON: scores, baseline, audit, analysis, grounded justification |
+| `GET`  | `/runs/{run_id}/result` | Final JSON: scores, baseline, audit, analysis, grounded justification, and the graphs and tables (`extra.graphs`) |
 | `GET`  | `/runs/{run_id}/agent_log` | Every code cell the analyst ran in the sandbox, with its output |
-| `GET`  | `/runs/{run_id}/download/{cleaned_csv,model}` | Downloads |
-| `GET`  | `/runs/{run_id}/plot` | Confusion matrix or predicted vs actual |
+| `GET`  | `/runs/{run_id}/download/{cleaned_csv,model,graphs}` | Downloads |
+| `GET`  | `/runs/{run_id}/graphs/{key}` | One graph as a PNG with a transparent background, by its key in `extra.graphs` |
+| `GET`  | `/runs/{run_id}/plot` | The main graph alone (confusion matrix or predicted vs actual), shown for a run without `extra.graphs` |
+| `POST` | `/runs/{run_id}/deploy` | Uploads the model to the shared inference app; answers at once while it deploys |
+| `GET`  | `/runs/{run_id}/deployment` | `not_deployed`, `deploying`, `succeeded` with the endpoint URLs, or `failed` with the reason |
+| `GET`  | `/runs/{run_id}/model_schema` | The prediction form: the model, its raw input columns, class labels, a sample row, and each category column's training values (`feature_values`, empty for runs trained before them) |
+| `POST` | `/runs/{run_id}/predict` | One prediction from the deployed model, proxied so the browser needs no CORS |
 | `GET`  | `/auth/me` | Whether accounts are on, and who is signed in |
 | `POST` | `/auth/code` | Body `{"email", "name"?}`: emails a code; a name creates the account |
 | `POST` | `/auth/verify` | Body `{"email", "code"}`: sets the session cookie |
@@ -118,14 +124,15 @@ Backend/
       profile.py, detect.py, eda.py
       audit.py                    data-quality and leakage checks (model-free)
       imbalance.py                class-imbalance assessment and strategy
-      feature_engineering.py      structural drops (incl. the analyst's)
+      feature_engineering.py      structural drops (incl. the analyst's) and the requested column
       train.py                    fans training out to the GPU service, stores results
       export.py                   cleaned CSV, model package
-      visualize.py                the result plot for each task
+      visualize.py                every graph and table of the held-out results, and their zip
     training/                     runs inside the GPU containers
       gpu_app.py                  Modal service: H200 function, image, pins
       tabular.py                  classification/regression engine
-      runtime.py                  loads and runs every model type (also shipped in packages)
+      runtime.py                  loads and runs every model type, applying the cleaning and the
+                                  requested column (also shipped in packages)
       common.py                   shared helpers
     agent/
       orchestrator.py             runs the stages for each task
@@ -147,7 +154,9 @@ Every run produces these files under `storage/runs/<run_id>/`:
 - `imbalance.json`, `audit.json`, `analysis.json`, `feature_engineering.json`, `metrics.json`
 - `model.joblib`, `model_meta.json` (+ `model_weights.*` for tables) - the trained model; `model_package.zip` bundles it for download
 - `agent_log.json` - the analyst's code cells and outputs
-- `plot.png`, `status.json`, `result.json`
+- `y_test.npy`, `y_pred.npy`, `y_score.npy` - the held-out labels, the model's predictions and its class probabilities (an SVM's margin), which the graphs are drawn from
+- `graphs/<key>.png`, `graphs/<key>.csv` - every graph (transparent, for the dashboard) and table; `graphs.json` lists them and `graphs.zip` bundles them for download
+- `plot.png` (a copy of the first graph), `status.json`, `result.json`
 
 Runs created before the Parquet switch (only `dataset.csv`) are converted on first access.
 
@@ -213,4 +222,4 @@ never has to know the URL or worry about CORS.
 - **Grounding checks numbers, not attribution.** A justification can't cite a number the pipeline didn't compute, but it could attach a real number to the wrong claim.
 - **Tables use a random train/test split.** Date columns in tables are dropped rather than featurised until time-aware splits exist.
 - **Binary decision threshold is fixed at 0.5.** Imbalanced runs use class weights, but the threshold isn't tuned for a target precision or recall.
-- **The frontend's running page is still simulated** (scripted notebook cells and timings). The backend now exposes the real stages and the analyst's actual code cells (`/agent_log`) for the redesign.
+- **The training notebook's code and logs are illustrative.** Which cell is active and the clock come from the run's real stage and times, but the cells show sample code. The analyst's actual code cells are at `/agent_log`, which the dashboard doesn't show yet.

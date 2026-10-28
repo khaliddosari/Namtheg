@@ -6,7 +6,13 @@ Namtheg runs across two primary cloud platforms:
 | --- | --- | --- |
 | Next.js frontend | **Vercel** | `Frontend/vercel.json` |
 | FastAPI backend | **Modal** (Serverless ASGI) | `Backend/app/deploy/backend_app.py` |
+| GPU training | **Modal** (NVIDIA H200) | `Backend/app/training/gpu_app.py` |
 | Serverless predictors | **Modal** (Shared inference app) | `Backend/app/deploy/inference_app.py` |
+
+Pushing `main` deploys only the frontend. The three Modal apps run the code uploaded at their last
+`modal deploy`, so a backend, training or inference change is live only once that app is deployed.
+Until then the dashboard falls back to what the older backend offers: for example one plot instead of
+the graph pager, and a text box instead of a list in the prediction form.
 
 ---
 
@@ -14,7 +20,7 @@ Namtheg runs across two primary cloud platforms:
 
 Deploying the backend to Modal solves all Render free-tier constraints:
 1. **No Hour Pool Exhaustion**: Modal provides **$30/month in free compute credits** per account, scaling to zero when idle instead of consuming 744+ hours/month against a 750h pool.
-2. **Persistent Storage**: Uses a persistent `modal.Volume("modelforge-storage")` mounted at `/storage`, preserving CSV uploads, EDA reports, and model plots across container restarts.
+2. **Persistent Storage**: Uses a persistent `modal.Volume("modelforge-storage")` mounted at `/storage`, preserving uploads, reports, graphs and models across container restarts.
 3. **No Keep-Alive Pingers**: Modal starts in ~1–2 seconds on incoming requests without requiring artificial pingers.
 4. **Adequate RAM**: Allocates 2+ GB RAM and 2 vCPUs, preventing out-of-memory crashes on scikit-learn / pandas data processing (Render free was capped at 512 MB).
 
@@ -40,7 +46,7 @@ Deploying the backend to Modal solves all Render free-tier constraints:
 
 ### Deploy
 ```bash
-modal deploy app/deploy/backend_app.py     # HTTP API + the run_job function
+modal deploy app/deploy/backend_app.py     # HTTP API + the run_job function; again after any backend change
 modal deploy app/training/gpu_app.py       # GPU training service; again whenever app/training/ changes
 modal deploy app/deploy/inference_app.py   # live predictions; again when its pins or app/training/runtime.py change
 modal app stop modelforge-train            # the old 8-CPU trainer, no longer used
@@ -53,9 +59,10 @@ work it started. Locally (`uvicorn`), runs use in-process background tasks inste
 8 CPU cores and 8 GB: it reads the full table once and holds it through the audit, then works on at
 most 300,000 rows (a random sample of larger tables) for the rest of the run.
 
-**Deploy order when the model format changes** (for example `app/training/runtime.py` or the bundle the
-trainer writes): deploy `gpu_app.py` and `inference_app.py` first, then `backend_app.py`, so no model is
-built or served by an older runtime than the backend expects.
+**Deploy order when a change spans the apps** (for example `app/training/runtime.py`, the bundle the
+trainer writes, or what it returns): deploy `gpu_app.py` and `inference_app.py` first, then
+`backend_app.py`, so no model is built or served by an older runtime than the backend expects. A
+redeploy takes effect within a minute; requests in that minute can still reach the old version.
 
 **All model training runs on NVIDIA H200s** (`app/training/gpu_app.py`); there is no CPU or local
 training path, so runs fail until this service is deployed. Modal only allows GPU functions on
