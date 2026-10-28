@@ -734,6 +734,13 @@ a, button, input, label, select, [role="tab"], [role="combobox"], [role="option"
     @slot;
   }
 }
+/* the training pipeline's list of steps (a size container on locked pages) when it is too short for each
+   step's one-line summary */
+@custom-variant steps-tight {
+  @container steps (max-height: 21rem) {
+    @slot;
+  }
+}
 /* a locked page with room to spare, a large desktop window, where the intro poster grows */
 @custom-variant lock-roomy {
   @container page (min-width: 100rem) and (min-height: 50rem) {

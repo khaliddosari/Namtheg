@@ -3,9 +3,10 @@
 Browser checks for the dashboard, run against a mock of the backend API so they
 need no Modal, GPU or R2:
 
-- `suite.js`: 56 end-to-end flows (the intro slide, upload, configure,
-  training and its clock, results, export, deploy, predict, share page,
-  sign-in and accounts, routing, navigation, loading and error states). The
+- `suite.js`: 57 end-to-end flows (the intro slide, upload, configure and a
+  column to add, training and its clock, results, export, deploy, predict
+  with category lists, share page, sign-in and accounts, routing,
+  navigation, loading and error states). The
   export flow measures the report as it is drawn (card order, text cut off,
   empty space in a card) and checks the PNG's size and the PDF's A4 pages.
   Any console or page error fails a test, except the HTTP errors a test

@@ -87,7 +87,8 @@ export interface RunStatus {
   task?: Task;
   stage?: string;
   target?: string | null;
-  prediction_time?: string | null; // when the user said predictions are made
+  prediction_time?: string | null; // when the user said predictions are made (older runs; no longer asked)
+  new_column?: string | null; // the column the user asked the analyst to add
   error?: string;
 }
 
@@ -96,7 +97,7 @@ export type Task = "auto" | "classification" | "regression";
 export interface StartRunBody {
   task: Task;
   target?: string;
-  prediction_time?: string; // optional; columns not known by then are left out
+  new_column?: string; // optional; a column to build from the others, in the user's words
 }
 
 export interface ModelScore {
@@ -125,6 +126,7 @@ export interface AnalysisResult {
   status?: string;
   notes?: string[];
   prediction_time?: string | null; // null: not stated, so anything known before the final step toward the outcome was usable
+  new_column?: string | null; // the column the user asked for, in their words
   summary?: string;
   findings?: { finding: string; evidence: string; severity: "info" | "warning" | "critical"; verified?: boolean }[];
   open_questions?: string[];
@@ -316,6 +318,7 @@ export interface ModelSchema {
   feature_cols: string[];
   class_labels?: string[] | null;
   sample: Record<string, number | string | null>;
+  feature_values?: Record<string, string[]>; // each category column's values in training, for a list
 }
 
 export interface PredictionResponse {

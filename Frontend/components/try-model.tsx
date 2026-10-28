@@ -6,6 +6,7 @@ import { predict as predictApi, type ModelSchema, type PredictionResponse } from
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldLabel } from "@/components/ui/field";
@@ -114,20 +115,39 @@ export function TryModel({
           // form scrolls instead of pushing it off the card.
           <div className="@container -me-1 max-h-[26rem] min-h-0 overflow-y-auto pe-1 lock:max-h-none">
             <div className="grid gap-3 @md:grid-cols-2 @2xl:grid-cols-3">
-              {schema.feature_cols.map((c) => (
-                <Field key={c} className="gap-1.5">
-                  <FieldLabel htmlFor={`feature-${c}`} className="block w-full truncate font-mono text-xs font-normal text-muted-foreground" title={c}>
-                    {c}
-                  </FieldLabel>
-                  <Input
-                    id={`feature-${c}`}
-                    value={values[c] ?? ""}
-                    onChange={(e) => setValues((prev) => ({ ...prev, [c]: e.target.value }))}
-                    dir="ltr"
-                    className="h-10 font-mono lg:h-8"
-                  />
-                </Field>
-              ))}
+              {schema.feature_cols.map((c) => {
+                // A category column offers the values it had in training, so a typo or a capital
+                // letter can't turn into a value the model never saw.
+                const choices = schema.feature_values?.[c];
+                const value = values[c] ?? "";
+                const set = (next: string) => setValues((prev) => ({ ...prev, [c]: next }));
+                return (
+                  <Field key={c} className="gap-1.5">
+                    <FieldLabel htmlFor={`feature-${c}`} className="block w-full truncate font-mono text-xs font-normal text-muted-foreground" title={c}>
+                      {c}
+                    </FieldLabel>
+                    {choices ? (
+                      <NativeSelect
+                        id={`feature-${c}`}
+                        value={value}
+                        onChange={(e) => set(e.target.value)}
+                        dir="ltr"
+                        className="w-full [&_select]:h-10 [&_select]:font-mono lg:[&_select]:h-8"
+                      >
+                        <NativeSelectOption value="">Not set</NativeSelectOption>
+                        {choices.map((v) => (
+                          <NativeSelectOption key={v} value={v}>
+                            {v}
+                          </NativeSelectOption>
+                        ))}
+                        {value && !choices.includes(value) && <NativeSelectOption value={value}>{value}</NativeSelectOption>}
+                      </NativeSelect>
+                    ) : (
+                      <Input id={`feature-${c}`} value={value} onChange={(e) => set(e.target.value)} dir="ltr" className="h-10 font-mono lg:h-8" />
+                    )}
+                  </Field>
+                );
+              })}
             </div>
           </div>
         ) : (

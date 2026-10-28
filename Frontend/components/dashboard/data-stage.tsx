@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import {
@@ -144,6 +145,7 @@ export function DataStage({
         target={target}
         shownTarget={shownTarget}
         shownPredictionTime={status?.prediction_time}
+        shownNewColumn={status?.new_column}
         setTarget={setTarget}
         onStarted={onStarted}
         goToStage={goToStage}
@@ -466,7 +468,7 @@ function UploadPanel({
         <a
           href="/insurance.csv"
           download="insurance.csv"
-          className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto self-start px-0")}
+          className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto self-center px-0")}
         >
           <Download data-icon="inline-start" />
           Download a sample (insurance.csv)
@@ -486,6 +488,7 @@ function ConfigurePanel({
   target,
   shownTarget,
   shownPredictionTime,
+  shownNewColumn,
   setTarget,
   onStarted,
   goToStage,
@@ -497,14 +500,15 @@ function ConfigurePanel({
   started: boolean;
   target: string;
   shownTarget: string;
-  shownPredictionTime: string | null | undefined; // undefined: a run from before the field existed
+  shownPredictionTime?: string | null; // runs from when the dashboard asked for it
+  shownNewColumn?: string | null;
   setTarget: (target: string) => void;
   onStarted: (status: RunStatus) => void;
   goToStage: (key: StageKey) => void;
   className?: string;
 }) {
   const columns = preview?.columns ?? [];
-  const [predictionTime, setPredictionTime] = useState("");
+  const [newColumn, setNewColumn] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -515,7 +519,7 @@ function ConfigurePanel({
   const body = (): StartRunBody => ({
     task: "auto",
     target,
-    ...(predictionTime.trim() && { prediction_time: predictionTime.trim() }),
+    ...(newColumn.trim() && { new_column: newColumn.trim() }),
   });
 
   const start = async () => {
@@ -561,14 +565,8 @@ function ConfigurePanel({
                 title={shownTarget}
                 valueClassName="font-mono text-base"
               />
-              {shownPredictionTime !== undefined && (
-                <Fact
-                  label="Predicting"
-                  value={shownPredictionTime || "Not stated: anything known before the final step toward the outcome"}
-                  title={shownPredictionTime ?? undefined}
-                  valueClassName={cn(!shownPredictionTime && "font-normal text-muted-foreground")}
-                />
-              )}
+              {shownNewColumn && <Fact label="New column" value={shownNewColumn} title={shownNewColumn} />}
+              {shownPredictionTime && <Fact label="Predicting" value={shownPredictionTime} title={shownPredictionTime} />}
             </dl>
           ) : (
             <>
@@ -594,19 +592,21 @@ function ConfigurePanel({
                 <FieldDescription className="text-xs lock-short:hidden">The column the model learns to predict.</FieldDescription>
               </Field>
               <Field>
-                <FieldLabel htmlFor="prediction-time">
-                  When will you predict? <span className="font-normal text-muted-foreground">Optional</span>
+                <FieldLabel htmlFor="new-column">
+                  Add a column <span className="font-normal text-muted-foreground">Optional</span>
                 </FieldLabel>
-                <Input
-                  id="prediction-time"
-                  value={predictionTime}
-                  onChange={(e) => setPredictionTime(e.target.value)}
-                  maxLength={300}
-                  placeholder="e.g. when the order is placed"
-                  className="h-10 lg:h-8"
+                <Textarea
+                  id="new-column"
+                  value={newColumn}
+                  onChange={(e) => setNewColumn(e.target.value)}
+                  maxLength={500}
+                  rows={2}
+                  placeholder="e.g. age group: under 30, 30 to 60, 60 and over"
+                  className="min-h-16 resize-none"
                 />
                 <FieldDescription className="text-xs lock-short:hidden">
-                  Columns not known yet at that moment are left out. Blank: anything known before the final step toward the outcome can be used.
+                  A column the data doesn&apos;t have, built from the ones it does. The analyst adds it to training and to every
+                  prediction, or says why it can&apos;t.
                 </FieldDescription>
               </Field>
             </>

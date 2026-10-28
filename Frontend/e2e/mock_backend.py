@@ -284,9 +284,12 @@ async def start(rid: str, request: Request):
     prediction_time = " ".join(str(body.get("prediction_time") or "").split()) or None
     if prediction_time and len(prediction_time) > 300:
         return err(422, "prediction_time: at most 300 characters.")
+    new_column = " ".join(str(body.get("new_column") or "").split()) or None
+    if new_column and len(new_column) > 500:
+        return err(422, "new_column: at most 500 characters.")
     kind = "reg" if target in NUMERIC else "clf"
-    r.update(status="queued", task=task, target=target, prediction_time=prediction_time, queued_at=time.time(),
-             started_at=time.time() + 1.5, kind=kind)
+    r.update(status="queued", task=task, target=target, prediction_time=prediction_time, new_column=new_column,
+             queued_at=time.time(), started_at=time.time() + 1.5, kind=kind)
     r.pop("stage", None)
     r.pop("error", None)
     link(request, rid)
@@ -348,7 +351,11 @@ def result_for(rid, r):
                 "extra": {"train_score": 0.9046, "test_score": 0.8691, "overfit_gap": 0.031, "hardware": {"gpu": "NVIDIA H200"},
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats,
                           "tuning_trials": trials_for("r2", False), **ANALYST_EXTRA,
-                          "analysis": {**ANALYST_EXTRA["analysis"], "prediction_time": r.get("prediction_time")}}}
+                          # As the backend reports a column the user asked for: added in cleaning, named in the analysis.
+                          "cleaning_applied": ANALYST_EXTRA["cleaning_applied"] + (
+                              [f"Added the column you asked for: {r['new_column']}."] if r.get("new_column") else []),
+                          "analysis": {**ANALYST_EXTRA["analysis"], "prediction_time": r.get("prediction_time"),
+                                       "new_column": r.get("new_column")}}}
     if kind == "clf":
         models = [("LGBMClassifier", 0.9612, 0.0081), ("XGBClassifier", 0.9577, 0.0093), ("RandomForestClassifier", 0.9533, 0.0102), ("LogisticRegression", 0.9401, 0.0110)]
         return {**common, "problem_type": "classification", "accuracy_score": 0.9612, "score_metric": "accuracy", "higher_is_better": True,
@@ -405,7 +412,9 @@ def schema(rid: str):
     clf = kind == "clf"
     return {"run_id": rid, "task": "auto", "model_name": "LGBMClassifier" if clf else "GradientBoostingRegressor",
             "problem_type": "classification" if clf else "regression", "feature_cols": feats,
-            "class_labels": ["no", "yes"] if clf else None, "sample": {c: PREVIEW[0][c] for c in feats}}
+            "class_labels": ["no", "yes"] if clf else None, "sample": {c: PREVIEW[0][c] for c in feats},
+            # Each category column's values in training, which the predict form lists.
+            "feature_values": {c: sorted({row[c] for row in ROWS}) for c in feats if c not in NUMERIC}}
 
 
 @app.get("/runs/{rid}/deployment")

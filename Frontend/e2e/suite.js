@@ -304,19 +304,25 @@ test("configure: predicting a column is the only option", async (page, x) => {
   await shot(page, "configure");
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
-test("configure: a stated prediction time reaches the run and is shown once started", async (page, x) => {
+test("configure: a column to add reaches the run, is shown, and the analysis says it was added", async (page, x) => {
   await page.goto(DATA);
   await uploadCsv(page);
-  await page.locator("#prediction-time").fill("  when the quote   is issued ");
+  x.ok(!(await page.locator("#prediction-time").count()), "no prediction time field");
+  await page.locator("#new-column").fill("  age group:\n under 30, 30 to 60,   60 and over ");
   await page.getByRole("button", { name: "Start training" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("stage") === "training");
   const run = new URL(page.url()).searchParams.get("run");
   await page.goto(`${APP}/?run=${run}&stage=data`);
-  const predicting = inStage(page, "data").locator("dt", { hasText: "Predicting" }).locator("xpath=following-sibling::dd");
-  await predicting.waitFor();
-  const shown = await predicting.innerText();
-  x.ok(shown === "when the quote is issued", `the run should show the stated time, got ${shown}`);
-}, { allow: [{ status: 409, url: "/uploads/direct" }] });
+  const shown = inStage(page, "data").locator("dt", { hasText: "New column" }).locator("xpath=following-sibling::dd");
+  await shown.waitFor();
+  const asked = "age group: under 30, 30 to 60, 60 and over";
+  x.ok((await shown.innerText()) === asked, `the run shows the column asked for, got ${await shown.innerText()}`);
+  await page.goto(`${APP}/?run=${run}&stage=results`);
+  await inStage(page, "results").getByRole("button", { name: "What the analyst found" }).click({ timeout: 40000 });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText(asked).first().waitFor();
+  await dialog.getByText(`Added the column you asked for: ${asked}.`).waitFor();
+}, { allow: [{ status: 409, url: "/uploads/direct" }, { status: 409, url: "/result" }, { status: 409, url: "/model_schema" }] });
 
 // ---------- training
 test("training: start slides to training, tracks live stages, lands on results", async (page, x) => {
@@ -546,6 +552,27 @@ test("deploy: model details that fail offer a retry", async (page) => {
   await inStage(page, "deploy").getByText("The model details didn't load").waitFor();
   await inStage(page, "deploy").getByRole("button", { name: "Try again" }).waitFor();
 }, { allow: [{ status: 409, url: "/model_schema" }] });
+
+test("predict: category fields are lists of the values the model trained on", async (page, x) => {
+  await page.goto(`${APP}/?run=live-done&stage=deploy`);
+  const d = inStage(page, "deploy");
+  const sex = d.locator("select#feature-sex");
+  await sex.waitFor();
+  const options = await sex.locator("option").allInnerTexts();
+  x.ok(JSON.stringify(options) === JSON.stringify(["Not set", "female", "male"]), `sex offers ${options}`);
+  x.ok((await sex.inputValue()) === "female", "pre-filled from the sample row");
+  x.ok((await d.locator("input#feature-age").count()) === 1 && !(await d.locator("select#feature-age").count()), "numbers stay typed");
+  await sex.selectOption("male");
+  await d.locator("select#feature-region").selectOption("northeast");
+  const [request] = await Promise.all([
+    page.waitForRequest((r) => r.url().includes("/predict") && r.method() === "POST"),
+    d.getByRole("button", { name: "Predict", exact: true }).click(),
+  ]);
+  const sent = request.postDataJSON().features;
+  x.ok(sent.sex === "male" && sent.region === "northeast" && sent.age === 19, `sent ${JSON.stringify(sent)}`);
+  await d.getByText("16884.9241").waitFor();
+  await shot(page, "predict-lists");
+});
 
 test("predict: classification with probabilities", async (page, x) => {
   await page.goto(`${APP}/?run=liveclf-done&stage=deploy`);

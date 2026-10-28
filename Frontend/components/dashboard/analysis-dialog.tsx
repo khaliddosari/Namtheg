@@ -86,7 +86,7 @@ export function AnalysisDialog({
           tabIndex={0}
           className="-mx-1 max-h-[60vh] space-y-5 overflow-y-auto rounded-md px-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
-          {(dictionary || sample?.sampled || analysis.prediction_time !== undefined) && (
+          {(dictionary || sample?.sampled || analysis.prediction_time !== undefined || analysis.new_column) && (
             <Section title="The data">
               <dl className="space-y-1.5">
                 {dictionary?.row_meaning && <Row label="One row">{dictionary.row_meaning}</Row>}
@@ -96,6 +96,7 @@ export function AnalysisDialog({
                     {analysis.prediction_time ?? "Not stated, so the model could use anything known before the final step toward the outcome."}
                   </Row>
                 )}
+                {analysis.new_column && <Row label="New column">{analysis.new_column}</Row>}
                 {sample?.sampled && (
                   <Row label="Rows">
                     Trained on a random sample of {sample.rows_used.toLocaleString()} of {sample.rows_total.toLocaleString()} rows,

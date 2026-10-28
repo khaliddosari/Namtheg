@@ -3,11 +3,13 @@
 import { useRef, useState } from "react";
 import {
   ArrowRight,
+  BrainCircuit,
   ChartColumn,
   Download,
   FileText,
   Image as ImageIcon,
   ListOrdered,
+  MessageSquareQuote,
   Package,
   ScanSearch,
   SlidersHorizontal,
@@ -204,15 +206,21 @@ function ChampionPanel({
             </>
           )}
           {(result.justification || analysisShown) && (
-            // On locked pages the clamped rationale needs its own link; the analysis always does.
-            <div className={cn("flex-wrap items-center gap-x-4 gap-y-1", analysisShown ? "flex" : "hidden lock:flex")} data-export-ignore>
+            // On locked pages the clamped rationale needs its own button; the analysis always does. The
+            // buttons share the row equally, so one alone fills it.
+            <div
+              className={cn("mt-auto auto-cols-fr grid-flow-col gap-2", analysisShown ? "grid" : "hidden lock:grid")}
+              data-export-ignore
+            >
               {result.justification && (
-                <Button variant="link" size="sm" onClick={() => setOpen(true)} className="hidden h-auto px-0 lock:inline-flex">
+                <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="hidden h-9 lock:inline-flex lg:h-8">
+                  <MessageSquareQuote data-icon="inline-start" />
                   Read the full rationale
                 </Button>
               )}
               {analysisShown && (
-                <Button variant="link" size="sm" onClick={() => setAnalysisOpen(true)} className="h-auto px-0">
+                <Button variant="outline" size="sm" onClick={() => setAnalysisOpen(true)} className="h-9 lg:h-8">
+                  <BrainCircuit data-icon="inline-start" />
                   What the analyst found
                 </Button>
               )}

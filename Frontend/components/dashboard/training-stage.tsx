@@ -210,7 +210,8 @@ export function TrainingStage({
               </span>
             </div>
 
-            <ol tabIndex={0} aria-label="Pipeline stages" className="-mx-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto rounded-lg px-1 outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+            {/* On a locked page the list is a size container: each step's summary shows only where all six fit with theirs. */}
+            <ol tabIndex={0} aria-label="Pipeline stages" className="-mx-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto rounded-lg px-1 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 lock:[container:steps/size]">
               {STEPS.map((step, i) => {
                 const st = stepStatus(i);
                 const StepIcon = STEP_ICONS[i];
@@ -253,7 +254,7 @@ export function TrainingStage({
                       >
                         {step.label}
                       </p>
-                      <p className="text-xs text-muted-foreground lock:truncate lock-short:hidden" title={step.summary}>
+                      <p className="text-xs text-muted-foreground lock:truncate steps-tight:hidden" title={step.summary}>
                         {step.summary}
                       </p>
                     </div>
