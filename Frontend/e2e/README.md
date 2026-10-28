@@ -62,6 +62,13 @@ against the mock, with `node_modules` linked rather than copied. Running
 `node_modules` link before it deletes the copy, so your real `node_modules` is
 never touched.
 
+## The link preview image
+
+`app/opengraph-image.png` is the picture link previews show. `npm run og-image`
+redraws it from the page in `og-image.js`, in the same browser, with the site's
+fonts loaded from jsDelivr. A browser draws the wordmark's swash forms, which
+Next's generated images can't. Redraw it after changing the brand or the theme.
+
 ## Seeded runs
 
 The mock starts with these run ids, and `POST /__mock/reset` restores them.

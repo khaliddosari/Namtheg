@@ -351,3 +351,6 @@ read, without the curves, which need probabilities those runs didn't keep.
   them, and the trainer returns each test row's class probabilities for the ROC and
   precision-recall curves. The dashboard pages through them in one card; the PDF report shows the
   one on screen, and the report's PNG export was replaced by a download of all the graphs.
+- The link preview image now shows the Thmanyah wordmark, the intro's headline and the dark navy
+  theme. It is a picture drawn in a browser (`npm run og-image` in `Frontend/e2e`) and kept in the
+  repository. Before, Next drew it from code, in IBM Plex, and can't draw the wordmark's swash forms.
