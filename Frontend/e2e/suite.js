@@ -415,7 +415,7 @@ test("results: full regression report, tuning, dialogs, downloads", async (page,
   await r.getByRole("button", { name: "Read the full rationale" }).click();
   await page.getByRole("dialog").getByText("Why GradientBoostingRegressor").waitFor();
   await page.keyboard.press("Escape");
-  await r.getByRole("button", { name: "Zoom the plot" }).click();
+  await r.getByRole("button", { name: "Zoom the graph" }).click();
   await page.getByRole("dialog").getByRole("img").waitFor();
   await page.keyboard.press("Escape");
   await shot(page, "results-reg");
@@ -456,12 +456,39 @@ test("results: classification overfit warning", async (page) => {
   await inStage(page, "results").getByText("Overfit gap 18%").waitFor();
 });
 
-test("results: export PNG and PDF", async (page, x) => {
+test("results: the graphs card pages through every graph and table", async (page, x) => {
+  await page.goto(`${APP}/?run=reg-done&stage=results`);
+  const r = inStage(page, "results");
+  const card = r.locator('[data-slot="panel"]').filter({ has: page.getByRole("button", { name: "Next graph" }) });
+  await card.waitFor();
+  const title = () => card.locator("h2").innerText();
+  const seen = [];
+  for (let i = 0; i < 7; i++) {
+    seen.push(await title());
+    await card.getByRole("button", { name: "Next graph" }).click();
+  }
+  x.ok(JSON.stringify(seen) === JSON.stringify(["Predicted vs actual", "Residuals", "Error distribution", "Held-out metrics",
+    "Feature importance", "Model comparison", "Tuning progress"]), `graphs in order: ${seen}`);
+  x.ok((await title()) === "Predicted vs actual", "the arrows wrap around");
+  await card.getByRole("button", { name: "Previous graph" }).click();
+  x.ok((await title()) === "Tuning progress" && (await card.getByText("7 / 7").count()), "and back");
+  x.ok((await card.locator("img").getAttribute("src")).endsWith("/graphs/tuning"), "each graph is its own image");
+  for (let i = 0; i < 3; i++) await card.getByRole("button", { name: "Previous graph" }).click();
+  const table = card.getByRole("region", { name: "Held-out metrics" });
+  await table.getByRole("cell", { name: "RMSE" }).waitFor();
+  x.ok(await table.getByRole("cell", { name: "4,403.345" }).count(), "a table shows its numbers");
+  await shot(page, "results-graph-table");
+});
+
+test("results: the PDF shows the graph on screen, and every graph downloads", async (page, x) => {
   await page.goto(`${APP}/?run=reg-done&stage=results`);
   const r = inStage(page, "results");
   await r.getByText("GradientBoostingRegressor").first().waitFor();
+  x.ok(!(await r.getByRole("button", { name: "Export PNG" }).count()), "no PNG export");
+  await r.getByRole("button", { name: "Next graph" }).click();
+  await r.getByRole("heading", { name: "Residuals" }).waitFor();
   // Measure the off-screen report as the export draws it: card order, text
-  // cut off, and space left empty at the bottom of each card.
+  // cut off, space left empty at the bottom of each card, and the graph shown.
   await page.evaluate(() => {
     window.__exportLayouts = [];
     new MutationObserver((records) => {
@@ -474,38 +501,35 @@ test("results: export PNG and PDF", async (page, x) => {
             const cards = [...clone.querySelectorAll("[data-export-grid] > *")].map((card) => {
               const body = card.lastElementChild;
               const content = Math.max(...[...body.children].map((c) => box(c).bottom));
-              return { title: card.querySelector("h2")?.textContent, spare: Math.round(box(body).bottom - content) };
+              return { title: card.querySelector("h2")?.textContent, spare: Math.round(box(body).bottom - content),
+                       image: card.querySelector("img")?.getAttribute("src") ?? null };
             });
             const clipped = [...clone.querySelectorAll("*")]
               .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
               .filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== "visible")
               .map((el) => el.textContent.trim().slice(0, 40));
-            window.__exportLayouts.push({ header: clone.querySelector(":scope > header")?.innerText ?? "", cards, clipped });
+            const arrows = clone.querySelectorAll('[aria-label="Next graph"], [aria-label="Previous graph"]').length;
+            window.__exportLayouts.push({ header: clone.querySelector(":scope > header")?.innerText ?? "", cards, clipped, arrows });
           })
         );
       }
     }).observe(document.body, { childList: true });
   });
 
-  const [png] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), r.getByRole("button", { name: "Export PNG" }).click()]);
-  const pngPath = path.join(OUT, "export.png");
-  await png.saveAs(pngPath);
-  x.ok((await toastText(page)).join(" ").includes("Report saved as PNG"), "png toast");
-  const head = fs.readFileSync(pngPath);
-  const [width, height] = [head.readUInt32BE(16), head.readUInt32BE(20)];
-  x.ok(width === 1920 && height > 2000 && height < 8000, `png is ${width}x${height}`);
+  const [pdf] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), r.getByRole("button", { name: "Export PDF" }).click()]);
+  const pdfPath = path.join(OUT, "export.pdf");
+  await pdf.saveAs(pdfPath);
+  x.ok((await toastText(page)).join(" ").includes("Report saved as PDF"), "pdf toast");
   const [layout] = await page.evaluate(() => window.__exportLayouts);
   x.ok(layout, "the export drew a report");
   x.ok(["Namtheg", "Model report", "insurance.csv", "predicting charges", "reg-done", "Exported"].every((t) => layout.header.includes(t)), `header: ${layout.header}`);
   const titles = layout.cards.map((c) => c.title);
-  x.ok(JSON.stringify(titles) === JSON.stringify(["Champion model", "R²", "Predicted vs actual", "Feature importance", "Model selection"]), `cards: ${titles}`);
+  x.ok(JSON.stringify(titles) === JSON.stringify(["Champion model", "R²", "Residuals", "Feature importance", "Model selection"]), `cards: ${titles}`);
+  x.ok(layout.cards[2].image?.endsWith("/graphs/residuals"), `the report shows the graph on screen: ${layout.cards[2].image}`);
+  x.ok(layout.arrows === 0, "no arrows in the report");
   x.ok(!layout.clipped.length, `text cut off: ${JSON.stringify(layout.clipped)}`);
   const blank = layout.cards.filter((c) => c.spare > 120);
   x.ok(!blank.length, `empty space at the bottom of ${JSON.stringify(blank)}`);
-
-  const [pdf] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), r.getByRole("button", { name: "Export PDF" }).click()]);
-  const pdfPath = path.join(OUT, "export.pdf");
-  await pdf.saveAs(pdfPath);
   const doc = fs.readFileSync(pdfPath, "latin1");
   const pages = doc.match(/\/Type \/Page\b(?!s)/g)?.length ?? 0;
   // A4 in points; jsPDF writes them as 595.2799999999999727 and 841.8899999999999864.
@@ -513,6 +537,13 @@ test("results: export PNG and PDF", async (page, x) => {
   x.ok(pages >= 2 && pages <= 4 && a4 === pages, `pdf: ${pages} pages, ${a4} of them A4`);
   x.ok(doc.includes("/Title (Namtheg model report: GradientBoostingRegressor for charges)"), "pdf title");
   x.ok(fs.statSync(pdfPath).size > 50000, "pdf has content");
+
+  const [zip] = await Promise.all([page.waitForEvent("download"), r.getByRole("link", { name: "Download graphs" }).click()]);
+  const zipPath = path.join(OUT, "graphs.zip");
+  await zip.saveAs(zipPath);
+  const bytes = fs.readFileSync(zipPath);
+  const names = [...bytes.toString("latin1").matchAll(/\d\d-[a-z_]+\.(?:svg|png|csv)/g)].map((m) => m[0]);
+  x.ok(bytes.subarray(0, 2).toString() === "PK" && new Set(names).size === 7, `a zip of every graph: ${[...new Set(names)]}`);
 });
 
 test("results: results that never arrive offer a retry", async (page, x) => {

@@ -16,12 +16,14 @@ the backend's virtualenv:
 """
 import asyncio
 import csv
+import io
 import json
 import random
 import re
 import secrets
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -62,6 +64,42 @@ ANALYST_EXTRA = {
     },
     "sample": {"rows_total": 1338, "rows_used": 1000, "sampled": True, "stratified": False},
     "cleaning_applied": ["Treated children as categories, not quantities (6 codes)."],
+}
+
+def _image(key, title, caption):
+    return {"key": key, "title": title, "caption": caption, "kind": "image"}
+
+
+SHARED_GRAPHS = [
+    _image("feature_importance", "Feature importance", "The columns that drive the prediction most."),
+    _image("model_comparison", "Model comparison", "Each candidate's cross-validated score, with its spread."),
+]
+GRAPHS = {
+    "reg": [
+        _image("predicted_vs_actual", "Predicted vs actual", "Points close to the diagonal are accurate predictions."),
+        _image("residuals", "Residuals", "Each prediction's error against its value. An even band around zero is good."),
+        _image("error_distribution", "Error distribution", "How far predictions land from the actual value."),
+        {"key": "test_metrics", "title": "Held-out metrics", "caption": "Every score on the test set the models never trained on.",
+         "kind": "table", "columns": ["Metric", "Value"],
+         "rows": [["R²", 0.8691], ["RMSE", 4403.345], ["MAE", 2556.3917], ["Median absolute error", 1725.6181],
+                  ["Rows in the test set", 268]]},
+        *SHARED_GRAPHS,
+        _image("tuning", "Tuning progress", "Each tuning trial's score, and the best so far."),
+    ],
+    "clf": [
+        _image("confusion_matrix", "Confusion matrix", "Diagonal cells are correct predictions."),
+        _image("confusion_matrix_share", "Confusion matrix, by actual class",
+               "Each row adds up to 100%: where the rows of each actual class were predicted."),
+        {"key": "class_metrics", "title": "Per-class metrics", "caption": "Precision, recall and F1 of each class on held-out data.",
+         "kind": "table", "columns": ["Class", "Precision", "Recall", "F1", "Rows"],
+         "rows": [["no", 0.9952, 0.9765, 0.9858, 213], ["yes", 0.9153, 0.9818, 0.9474, 55],
+                  ["Macro average", 0.9552, 0.9792, 0.9666, 268], ["Weighted average", 0.9788, 0.9776, 0.9779, 268]]},
+        _image("roc_curve", "ROC curve", "True against false positives at every threshold. AUC is the area under it."),
+        _image("precision_recall", "Precision and recall",
+               "Precision against recall at every threshold. The dashed line is a guess with no model."),
+        _image("class_counts", "Actual and predicted classes", "How often each class is in the test set, and predicted."),
+        *SHARED_GRAPHS,
+    ],
 }
 
 STAGES = ["starting", "profile", "detect", "audit", "analysis", "eda", "feature_engineering", "train", "visualize", "report", "package"]
@@ -347,10 +385,10 @@ def result_for(rid, r):
                   ("LGBMRegressor", 0.8519, 0.0133), ("ExtraTreesRegressor", 0.8307, 0.0198), ("Ridge", 0.7489, 0.0211), ("LinearRegression", 0.7481, 0.0215)]
         return {**common, "problem_type": "regression", "accuracy_score": 0.8735, "score_metric": "r2", "higher_is_better": True,
                 "model_name": models[0][0], "justification": just.format(m=models[0][0], s="R² (0.874 ± 0.012)"),
-                "downloads": ["cleaned_csv", "model"],
+                "downloads": ["cleaned_csv", "model", "graphs"],
                 "extra": {"train_score": 0.9046, "test_score": 0.8691, "overfit_gap": 0.031, "hardware": {"gpu": "NVIDIA H200"},
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats,
-                          "tuning_trials": trials_for("r2", False), **ANALYST_EXTRA,
+                          "tuning_trials": trials_for("r2", False), "graphs": GRAPHS["reg"], **ANALYST_EXTRA,
                           # As the backend reports a column the user asked for: added in cleaning, named in the analysis.
                           "cleaning_applied": ANALYST_EXTRA["cleaning_applied"] + (
                               [f"Added the column you asked for: {r['new_column']}."] if r.get("new_column") else []),
@@ -359,8 +397,10 @@ def result_for(rid, r):
     if kind == "clf":
         models = [("LGBMClassifier", 0.9612, 0.0081), ("XGBClassifier", 0.9577, 0.0093), ("RandomForestClassifier", 0.9533, 0.0102), ("LogisticRegression", 0.9401, 0.0110)]
         return {**common, "problem_type": "classification", "accuracy_score": 0.9612, "score_metric": "accuracy", "higher_is_better": True,
-                "model_name": models[0][0], "justification": just.format(m=models[0][0], s="accuracy (0.961)"), "downloads": ["model"],
+                "model_name": models[0][0], "justification": just.format(m=models[0][0], s="accuracy (0.961)"),
+                "downloads": ["model", "graphs"],
                 "extra": {"train_score": 0.9987, "test_score": 0.8211, "overfit_gap": 0.1776, "n_classes": 2,
+                          "graphs": GRAPHS["clf"],
                           "all_models": [{"name": n, "cv_mean": m, "cv_std": s} for n, m, s in models], "top_features": feats[:5]}}
     if kind == "bare":
         return {**common, "problem_type": "regression", "accuracy_score": 0.7123, "score_metric": "r2", "model_name": "Ridge"}
@@ -393,8 +433,41 @@ def plot(rid: str):
     return Response(svg, media_type="image/svg+xml")
 
 
+def _graph_svg(title: str) -> str:
+    """A stand-in graph: bars under the graph's title, so each one looks different."""
+    random.seed(title)
+    bars = "".join(f'<rect x="{60 + i * 56}" y="{560 - h}" width="40" height="{h}" fill="#5b8def"/>'
+                   for i, h in enumerate(random.randint(60, 440) for _ in range(10)))
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="680" height="680" viewBox="0 0 680 680">'
+            f'<rect width="680" height="680" fill="#fff"/><text x="340" y="60" font-size="32" text-anchor="middle" '
+            f'font-family="sans-serif">{title}</text>{bars}</svg>')
+
+
+def _graphs_of(rid: str):
+    r = get_run(rid)
+    return GRAPHS.get(r.get("kind"), []) if r and r["status"] == "succeeded" else []
+
+
+@app.get("/runs/{rid}/graphs/{key}")
+def graph(rid: str, key: str):
+    entry = next((g for g in _graphs_of(rid) if g["key"] == key and g["kind"] == "image"), None)
+    if not entry:
+        return err(404, "No such graph for this run.")
+    return Response(_graph_svg(entry["title"]), media_type="image/svg+xml")
+
+
 @app.get("/runs/{rid}/download/{kind}")
 def download(rid: str, kind: str):
+    if kind == "graphs":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for i, g in enumerate(_graphs_of(rid), 1):
+                if g["kind"] == "image":
+                    z.writestr(f"{i:02d}-{g['key']}.svg", _graph_svg(g["title"]))
+                else:
+                    z.writestr(f"{i:02d}-{g['key']}.csv", "\n".join(",".join(map(str, row)) for row in [g["columns"], *g["rows"]]))
+        return Response(buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{rid}_graphs.zip"'})
     return Response(f"mock {kind} for {rid}\n", media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{rid}_{kind}.csv"'})
 

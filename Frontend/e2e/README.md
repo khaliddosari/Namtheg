@@ -3,12 +3,13 @@
 Browser checks for the dashboard, run against a mock of the backend API so they
 need no Modal, GPU or R2:
 
-- `suite.js`: 57 end-to-end flows (the intro slide, upload, configure and a
-  column to add, training and its clock, results, export, deploy, predict
-  with category lists, share page, sign-in and accounts, routing,
-  navigation, loading and error states). The
-  export flow measures the report as it is drawn (card order, text cut off,
-  empty space in a card) and checks the PNG's size and the PDF's A4 pages.
+- `suite.js`: 58 end-to-end flows (the intro slide, upload, configure and a
+  column to add, training and its clock, results and paging through the
+  graphs, export, deploy, predict with category lists, share page, sign-in
+  and accounts, routing, navigation, loading and error states). The export
+  flow measures the report as it is drawn (card order, the graph on screen,
+  text cut off, empty space in a card), checks the PDF's A4 pages, and
+  downloads the graphs' zip.
   Any console or page error fails a test, except the HTTP errors a test
   provokes on purpose (the R2 fallback's 409, a missing plot's 404, a failed
   predict's 502, a wrong sign-in code's 400, an upload read that a proxy
@@ -19,7 +20,7 @@ need no Modal, GPU or R2:
   locked pages. Screenshots land in `shots/layout` for a look by eye.
 - `a11y.js`: axe-core WCAG 2.1 A/AA on each screen at desktop and phone width,
   plus a keyboard walk that checks every focus stop shows a focus ring, then
-  on each dialog: the rationale, the analyst's findings, the zoomed plot,
+  on each dialog: the rationale, the analyst's findings, the zoomed graph,
   cancelling a run, every sign-up step, and the account.
 
 ## Setup, once

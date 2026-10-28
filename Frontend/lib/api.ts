@@ -146,8 +146,19 @@ export interface SampleInfo {
   sampled: boolean;
 }
 
+// One of a finished run's graphs (a PNG at /runs/<id>/graphs/<key>) or tables (its rows inline).
+export interface Graph {
+  key: string;
+  title: string;
+  caption: string;
+  kind: "image" | "table";
+  columns?: string[];
+  rows?: (string | number)[][];
+}
+
 export interface ResultExtra {
   analysis?: AnalysisResult;
+  graphs?: Graph[]; // every graph and table, in the order the dashboard shows them
   sample?: SampleInfo;
   cleaning_applied?: string[];
   train_accuracy?: number;
@@ -186,7 +197,7 @@ export interface RunResult {
   downloads?: DownloadKind[];
 }
 
-export type DownloadKind = "cleaned_csv" | "model";
+export type DownloadKind = "cleaned_csv" | "model" | "graphs";
 
 // A plain link: the backend streams the file, or redirects to a short-lived
 // R2 URL when R2 storage is configured.
@@ -291,6 +302,10 @@ export const getResult = (runId: string): Promise<RunResult> => request(`/runs/$
 
 export function plotUrl(runId: string): string {
   return `${BASE}/runs/${runId}/plot`;
+}
+
+export function graphUrl(runId: string, key: string): string {
+  return `${BASE}/runs/${runId}/graphs/${key}`;
 }
 
 export interface Deployment {

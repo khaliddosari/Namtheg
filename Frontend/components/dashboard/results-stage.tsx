@@ -1,13 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   BrainCircuit,
   ChartColumn,
+  ChevronLeft,
+  ChevronRight,
   Download,
   FileText,
-  Image as ImageIcon,
+  Images,
   ListOrdered,
   MessageSquareQuote,
   Package,
@@ -18,7 +20,7 @@ import {
   TriangleAlert,
   ZoomIn,
 } from "lucide-react";
-import { downloadUrl, plotUrl, type RunResult, type TuningTrial } from "@/lib/api";
+import { downloadUrl, graphUrl, plotUrl, type Graph, type RunResult, type TuningTrial } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -29,7 +31,7 @@ import { Brand, BrandMark, formatArabicBrand } from "@/components/brand";
 import { Fact, Meter, Panel, PanelEmpty, PanelError, PanelSkeleton } from "@/components/panel";
 import { Segmented } from "@/components/segmented";
 import { isRunFailed, type RunState } from "./use-run";
-import { exportReportPdf, exportReportPng } from "./report-export";
+import { exportReportPdf } from "./report-export";
 import { AnalysisDialog, hasAnalysis } from "./analysis-dialog";
 import { formatScore, metricInfo } from "./metrics";
 import type { StageKey } from "./dashboard";
@@ -98,7 +100,7 @@ export function ResultsStage({
         />
         <ScorePanel result={result} empty={empty(<ChartColumn />, "No score yet")} />
         <FilesPanel runId={runId} result={result} waiting={waiting} reportRef={reportRef} goToStage={goToStage} />
-        <PlotPanel
+        <GraphsPanel
           runId={runId}
           result={result}
           empty={waiting ? <PanelSkeleton rows={0} block /> : empty(<ScanSearch />, "No plot yet")}
@@ -307,22 +309,21 @@ function FilesPanel({
   reportRef: React.RefObject<HTMLDivElement | null>;
   goToStage: (key: StageKey) => void;
 }) {
-  const [exporting, setExporting] = useState<"png" | "pdf" | null>(null);
+  const [exporting, setExporting] = useState(false);
   const downloads = result?.downloads ?? [];
 
-  const exportAs = async (kind: "png" | "pdf") => {
+  const exportPdf = async () => {
     if (!reportRef.current || !runId || exporting) return;
-    setExporting(kind);
-    const name = `namtheg-${runId}-report.${kind}`;
+    setExporting(true);
+    const name = `namtheg-${runId}-report.pdf`;
     try {
-      if (kind === "png") await exportReportPng(reportRef.current, name);
-      else await exportReportPdf(reportRef.current, name, `Namtheg model report: ${result?.model_name ?? "champion"} for ${result?.target ?? runId}`);
-      toast.add({ title: `Report saved as ${kind.toUpperCase()}`, description: name, type: "success" });
+      await exportReportPdf(reportRef.current, name, `Namtheg model report: ${result?.model_name ?? "champion"} for ${result?.target ?? runId}`);
+      toast.add({ title: "Report saved as PDF", description: name, type: "success" });
     } catch (e) {
-      console.warn(`${kind.toUpperCase()} export failed`, e);
+      console.warn("PDF export failed", e);
       toast.add({ title: "Export failed", description: "The report could not be rendered. Try again.", type: "error" });
     } finally {
-      setExporting(null);
+      setExporting(false);
     }
   };
 
@@ -331,7 +332,7 @@ function FilesPanel({
   return (
     <Panel
       title="Report and files"
-      caption="Export this page, download the data and the model"
+      caption="The report, every graph, the data and the model"
       data-export-ignore
       className="@5xl/report:col-span-4"
     >
@@ -342,12 +343,14 @@ function FilesPanel({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" size="sm" onClick={() => exportAs("png")} disabled={!!exporting} className="h-9 lg:h-7">
-              {exporting === "png" ? <Spinner data-icon="inline-start" /> : <ImageIcon data-icon="inline-start" />}
-              Export PNG
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => exportAs("pdf")} disabled={!!exporting} className="h-9 lg:h-7">
-              {exporting === "pdf" ? <Spinner data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
+            {downloads.includes("graphs") && (
+              <a href={downloadUrl(runId, "graphs")} className={fileLink}>
+                <Images data-icon="inline-start" />
+                Download graphs
+              </a>
+            )}
+            <Button variant="outline" size="sm" onClick={exportPdf} disabled={exporting} className="h-9 lg:h-7">
+              {exporting ? <Spinner data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
               Export PDF
             </Button>
             {downloads.includes("cleaned_csv") && (
@@ -373,9 +376,17 @@ function FilesPanel({
   );
 }
 
-/* ─── Plot ───────────────────────────────────────────────────────────── */
+/* ─── Graphs ─────────────────────────────────────────────────────────── */
 
-function PlotPanel({
+const formatCell = (v: string | number) =>
+  typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 4 }) : v;
+
+/**
+ * Every graph and table the run produced, one at a time, with arrows to page
+ * through them. The report export shows the one on screen, since it copies the
+ * card as it is. Results from before the graphs were kept have one plot.
+ */
+function GraphsPanel({
   runId,
   result,
   empty,
@@ -386,53 +397,118 @@ function PlotPanel({
   empty: React.ReactNode;
   exportSpan: number;
 }) {
+  const [index, setIndex] = useState(0);
   const [open, setOpen] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const plot = PLOT_TITLES[result?.problem_type ?? "regression"] ?? PLOT_TITLES.regression;
-  const src = runId ? plotUrl(runId) : "";
+  const [failed, setFailed] = useState<string[]>([]);
+  const graphs = useMemo<(Graph & { src?: string })[]>(() => {
+    if (!result || !runId) return [];
+    if (result.extra?.graphs?.length) {
+      return result.extra.graphs.map((g) => ({ ...g, src: g.kind === "image" ? graphUrl(runId, g.key) : undefined }));
+    }
+    const plot = PLOT_TITLES[result.problem_type ?? "regression"] ?? PLOT_TITLES.regression;
+    return [{ key: "plot", kind: "image", ...plot, src: plotUrl(runId) }];
+  }, [result, runId]);
+  const graph = graphs[Math.min(index, graphs.length - 1)];
+  const broken = !!graph && failed.includes(graph.key);
+  const step = (by: number) => setIndex((i) => (i + by + graphs.length) % graphs.length);
 
   return (
     <Panel
-      title={result ? plot.title : "Evaluation plot"}
-      caption={result ? plot.caption : "How the champion does on held-out data"}
+      title={graph ? graph.title : "Graphs"}
+      caption={graph ? graph.caption : "How the champion does on held-out data"}
       actions={
-        result && !failed ? (
-          <Button variant="ghost" size="icon-sm" aria-label="Zoom the plot" onClick={() => setOpen(true)} data-export-ignore className="size-9 lg:size-7">
-            <ZoomIn />
-          </Button>
+        graph && (graphs.length > 1 || (graph.kind === "image" && !broken)) ? (
+          <div data-export-ignore className="flex items-center gap-0.5">
+            {graphs.length > 1 && (
+              <>
+                <Button variant="ghost" size="icon-sm" aria-label="Previous graph" onClick={() => step(-1)} className="size-9 lg:size-7">
+                  <ChevronLeft />
+                </Button>
+                <span aria-live="polite" className="min-w-10 text-center font-mono text-xs text-muted-foreground tabular-nums">
+                  {index + 1} / {graphs.length}
+                </span>
+                <Button variant="ghost" size="icon-sm" aria-label="Next graph" onClick={() => step(1)} className="size-9 lg:size-7">
+                  <ChevronRight />
+                </Button>
+              </>
+            )}
+            {graph.kind === "image" && !broken && (
+              <Button variant="ghost" size="icon-sm" aria-label="Zoom the graph" onClick={() => setOpen(true)} className="size-9 lg:size-7">
+                <ZoomIn />
+              </Button>
+            )}
+          </div>
         ) : undefined
       }
       data-export-span={exportSpan}
       className="@5xl/report:col-span-4"
     >
-      {result && runId ? (
-        failed ? (
+      {!graph || !result ? (
+        empty
+      ) : graph.kind === "table" ? (
+        <div
+          tabIndex={0}
+          role="region"
+          aria-label={graph.title}
+          className="min-h-0 flex-1 overflow-auto rounded-xl bg-background/30 ring-1 ring-border outline-none focus-visible:ring-3 focus-visible:ring-ring/50 *:data-[slot=table-container]:overflow-visible"
+        >
+          <Table className="text-xs">
+            <TableHeader className="sticky top-0 z-10 bg-popover backdrop-blur-xl">
+              <TableRow className="hover:bg-transparent">
+                {graph.columns?.map((c, i) => (
+                  <TableHead key={c} className={cn("h-9 px-3 text-xs text-muted-foreground", i > 0 && "text-end")}>
+                    {c}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {graph.rows?.map((row, r) => (
+                <TableRow key={r} className="border-border/60">
+                  {row.map((v, i) => (
+                    <TableCell key={i} className={cn("px-3 py-1.5", i > 0 ? "text-end font-mono tabular-nums" : "font-medium")}>
+                      {formatCell(v)}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : broken ? (
+        graph.key === "plot" ? (
           <PanelEmpty icon={<ScanSearch />} title="No plot for this run" description="The run finished without saving an evaluation plot." />
         ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              aria-label="Open the plot larger"
-              className="relative flex aspect-square w-full flex-1 cursor-zoom-in items-center justify-center overflow-hidden rounded-xl bg-background/40 ring-1 ring-border outline-none focus-visible:ring-3 focus-visible:ring-ring/50 lock:aspect-auto lock:min-h-0"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element -- backend-generated PNG */}
-              <img src={src} alt={`${plot.title} for ${result.model_name ?? "the champion model"}`} onError={() => setFailed(true)} className="h-full w-full object-contain" />
-            </button>
-            <Dialog open={open} onOpenChange={setOpen}>
-              <DialogContent className="sm:max-w-4xl">
-                <DialogHeader>
-                  <DialogTitle>{plot.title}</DialogTitle>
-                  <DialogDescription>{plot.caption}</DialogDescription>
-                </DialogHeader>
-                {/* eslint-disable-next-line @next/next/no-img-element -- backend-generated PNG */}
-                <img src={src} alt={plot.title} className="max-h-[75vh] w-full rounded-lg object-contain" />
-              </DialogContent>
-            </Dialog>
-          </>
+          <PanelEmpty icon={<ScanSearch />} title="This graph didn't load" description="The others may have; use the arrows." />
         )
       ) : (
-        empty
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label={`Open ${graph.title.toLowerCase()} larger`}
+            className="relative flex aspect-square w-full flex-1 cursor-zoom-in items-center justify-center overflow-hidden rounded-xl bg-background/40 ring-1 ring-border outline-none focus-visible:ring-3 focus-visible:ring-ring/50 lock:aspect-auto lock:min-h-0"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- backend-generated PNG */}
+            <img
+              key={graph.key}
+              src={graph.src}
+              alt={`${graph.title} for ${result.model_name ?? "the champion model"}`}
+              onError={() => setFailed((f) => [...f, graph.key])}
+              className="h-full w-full object-contain"
+            />
+          </button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogContent className="sm:max-w-4xl">
+              <DialogHeader>
+                <DialogTitle>{graph.title}</DialogTitle>
+                <DialogDescription>{graph.caption}</DialogDescription>
+              </DialogHeader>
+              {/* eslint-disable-next-line @next/next/no-img-element -- backend-generated PNG */}
+              <img src={graph.src} alt={graph.title} className="max-h-[75vh] w-full rounded-lg object-contain" />
+            </DialogContent>
+          </Dialog>
+        </>
       )}
     </Panel>
   );

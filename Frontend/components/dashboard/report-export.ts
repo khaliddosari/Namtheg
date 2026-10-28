@@ -1,5 +1,5 @@
 /**
- * PNG and PDF export of the results report.
+ * PDF export of the results report.
  *
  * The report is cloned into an off-screen sandbox and laid out there as a
  * document rather than as the dashboard: a header with the run's details that
@@ -11,13 +11,13 @@
  * variant, a container query on the page) do not apply and every card comes
  * out at its full height.
  *
- * html-to-image rasterises the clone. The PNG is that image; the PDF cuts it
- * into A4 pages between rows of cards, or between the rows of a card taller
- * than a page.
+ * html-to-image rasterises the clone, and the PDF cuts that image into A4
+ * pages between rows of cards, or between the rows of a card taller than a
+ * page. The graphs card is copied as it stands, so the report shows the graph
+ * on screen; every graph downloads on its own as graphs.zip.
  */
 
-// 960 CSS px: a 1920 px wide PNG, and on an A4 page the smallest text still
-// comes out at about 8 pt.
+// 960 CSS px: on an A4 page the smallest text still comes out at about 8 pt.
 const CAPTURE_WIDTH = 960;
 const CAPTURE_PADDING = 24;
 // The space between rows of cards (gap-3 on the grid, mb-3 under the header).
@@ -256,14 +256,6 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error("snapshot failed to decode"));
     img.src = src;
   });
-}
-
-export async function exportReportPng(node: HTMLElement, filename: string) {
-  const snap = await captureReport(node);
-  const link = document.createElement("a");
-  link.href = snap.dataUrl;
-  link.download = filename;
-  link.click();
 }
 
 // A4 portrait, in points.

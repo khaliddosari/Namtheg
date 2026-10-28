@@ -101,7 +101,7 @@ async function keyboardWalk(page) {
   if (a.violations.length) problems++;
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
-  await page.getByRole("button", { name: "Zoom the plot" }).click();
+  await page.getByRole("button", { name: "Zoom the graph" }).click();
   await page.waitForTimeout(400);
   const z = await axe(page, [['[data-slot="dialog-content"]']]);
   console.log(`plot dialog: violations ${z.violations.length}`, z.violations.map((v) => v.id).join(", "));
