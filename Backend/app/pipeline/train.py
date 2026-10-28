@@ -10,6 +10,7 @@ quietly training somewhere else.
 """
 import io
 import logging
+import time
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,9 @@ log = logging.getLogger(__name__)
 
 GPU_APP_NAME = "namtheg-train-gpu"
 TRAINING_GPU = "H200"  # must equal app/training/gpu_app.GPU (tests/test_training.py checks)
+# Past its budget a group still fits and packages its best model; this is how
+# long that may take before the group is stopped.
+GROUP_GRACE_SECONDS = 300
 WEIGHTS_FILES = {"xgboost-json": "model_weights.json", "catboost-cbm": "model_weights.cbm",
                  "numpy-npz": "model_weights.npz"}
 ESTIMATOR_KIND = {"xgboost-json": "xgboost-json", "catboost-cbm": "catboost-cbm", "numpy-npz": "sklearn"}
@@ -45,7 +49,9 @@ def _not_deployed(e: Exception) -> GPUServiceError:
 
 def _gpu_map(function: str, data: bytes, specs: list[dict], run_id: str) -> list:
     """Run `function` once per spec, all at once on separate GPU containers.
-    Returns each call's result, or the exception it raised."""
+    Returns each call's result, or the exception it raised. A call still
+    running GROUP_GRACE_SECONDS past the training budget is stopped, so one
+    stuck group can't hold the whole run until the GPU service's timeout."""
     import modal
 
     try:
@@ -55,10 +61,18 @@ def _gpu_map(function: str, data: bytes, specs: list[dict], run_id: str) -> list
         raise _not_deployed(e) from e
     # Recorded so that cancelling the run also stops its GPUs.
     storage.update_status(run_id, gpu_calls=[c.object_id for c in calls])
+    limit = settings.training_budget_seconds + GROUP_GRACE_SECONDS
+    deadline = time.monotonic() + limit
     results = []
     for call in calls:
         try:
-            results.append(call.get())
+            results.append(call.get(timeout=max(0.0, deadline - time.monotonic())))
+        except TimeoutError:
+            try:
+                call.cancel(terminate_containers=True)
+            except Exception as e:  # finished in the meantime
+                log.warning("Could not cancel GPU call %s: %s", call.object_id, e)
+            results.append(GPUServiceError(f"Stopped: still running after {limit // 60} minutes."))
         except Exception as e:
             results.append(e)
     return results
@@ -118,6 +132,7 @@ def train_tabular(run_id: str, target: str, task: str, imbalance_plan: dict) -> 
     fe = storage.read_json(run_id, "feature_engineering.json") or {}
     plan = {"imbalance": imbalance_plan, "tuning_trials": settings.tuning_trials,
             "tuning_timeout_seconds": settings.tuning_timeout_seconds,
+            "time_budget_seconds": settings.training_budget_seconds,
             # The model takes the raw columns and cleans them itself (runtime.prepare).
             "input_cols": fe.get("input_columns"), "cleaning": fe.get("cleaning")}
     specs = [{"task": task, "target": target, "candidates": list(group), "plan": plan} for group in tabular.GROUPS]

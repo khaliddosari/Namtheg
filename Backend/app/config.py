@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # whichever limit comes first.
     tuning_trials: int = 20
     tuning_timeout_seconds: int = 300
+    # Each model group starts no new work after this, then fits its best model;
+    # a group still running well past it is stopped (app/pipeline/train.py).
+    training_budget_seconds: int = 900
 
     # Cloudflare R2 (S3-compatible). Off unless all four are set. When on,
     # every run artifact is mirrored to R2, runs missing locally are restored

@@ -18,7 +18,8 @@ GPU = "H200"
 APP_NAME = "namtheg-train-gpu"
 PYTHON_VERSION = "3.12"
 MAX_PARALLEL_GPUS = 3
-CLASSIC_TIMEOUT = 2 * 3600
+# A backstop only: the backend stops a group long before this (app/pipeline/train.py).
+CLASSIC_TIMEOUT = 30 * 60
 
 # Pinned together. The inference image (app/deploy/inference_app.py) must use
 # the same versions of every package it shares with these (tests/test_training.py
@@ -80,7 +81,11 @@ def train_classic(data: bytes, spec: dict) -> dict:
     # Must precede every scikit-learn import so its estimators are GPU-backed.
     import cuml.accel
 
-    cuml.accel.install()
+    # Plain device memory, not the managed (UVM) memory cuml.accel turns on by
+    # default: in these containers a managed allocation can block forever with
+    # the GPU idle (a Ridge fit sat in RMM's allocator until the 2-hour
+    # timeout). The working set always fits in GPU memory, so UVM buys nothing.
+    cuml.accel.install(disable_uvm=True)
     hardware = _require_gpu()
     from app.training import tabular
 

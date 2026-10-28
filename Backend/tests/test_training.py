@@ -12,6 +12,8 @@ import pytest
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 
+from app import storage
+from app.config import settings
 from app.deploy import inference_app
 from app.pipeline import imbalance, train
 from app.training import common, gpu_app, tabular
@@ -19,6 +21,8 @@ from app.training.runtime import load_bundle
 from tests.conftest import INSURANCE_CSV
 
 ALL = ["XGBoost", "XGBoost Leaf-wise", "CatBoost", "SVM", "KNN", "Linear"]
+# Taken before conftest's CPU harness replaces it for every test.
+REAL_GPU_MAP = train._gpu_map
 
 
 def _run(df: pd.DataFrame, target: str, task: str, candidates=None) -> dict:
@@ -45,6 +49,34 @@ def test_training_and_inference_images_pin_identical_versions():
 
 def test_gpu_settings_match_the_backend():
     assert gpu_app.GPU == train.TRAINING_GPU == "H200"
+    # The backend stops a stuck group itself; the GPU service's timeout is only a backstop.
+    assert gpu_app.CLASSIC_TIMEOUT > settings.training_budget_seconds + train.GROUP_GRACE_SECONDS
+
+
+def test_a_stuck_model_group_is_stopped_not_waited_for(monkeypatch):
+    class Call:
+        def __init__(self, done):
+            self.object_id, self.done, self.waits, self.terminated = f"fc-{done}", done, [], False
+
+        def get(self, timeout=None):
+            self.waits.append(timeout)
+            if not self.done:
+                raise TimeoutError()
+            return {"best": "XGBoost"}
+
+        def cancel(self, terminate_containers=False):
+            self.terminated = terminate_containers
+
+    calls = [Call(done=True), Call(done=False)]
+    spawned = iter(calls)
+    monkeypatch.setattr(train, "_function", lambda name: types.SimpleNamespace(spawn=lambda data, spec: next(spawned)))
+    results = REAL_GPU_MAP("train_classic", b"", [{}, {}], storage.new_run_id())
+    assert results[0] == {"best": "XGBoost"}
+    assert isinstance(results[1], train.GPUServiceError) and "Stopped" in str(results[1])
+    assert calls[1].terminated  # its container is stopped too, so it stops billing
+    # Every wait is bounded (with room for float rounding in deadline - now).
+    limit = settings.training_budget_seconds + train.GROUP_GRACE_SECONDS
+    assert all(t is not None and 0 <= t <= limit + 1e-6 for c in calls for t in c.waits)
 
 
 def test_gpu_only_rejects_cpu_fallback(monkeypatch):
@@ -142,6 +174,27 @@ def test_too_few_rows_in_a_class_is_a_clear_error():
     df = pd.DataFrame({"x": range(40), "y": ["a"] * 38 + ["b"] * 2})
     with pytest.raises(ValueError, match="fewer than 3 rows"):
         _run(df, "y", "classification")
+
+
+def test_a_spent_time_budget_skips_the_rest_of_the_group(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(tabular, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    real = tabular.cross_validate
+
+    def slow(*args, **kwargs):
+        clock[0] += 100  # each candidate's CV takes 100 seconds
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tabular, "cross_validate", slow)
+    buf = io.BytesIO()
+    pd.read_csv(INSURANCE_CSV).to_parquet(buf)
+    plan = {"imbalance": {}, "tuning_trials": 5, "tuning_timeout_seconds": 30, "time_budget_seconds": 150}
+    out = tabular.run(buf.getvalue(), {"task": "regression", "target": "charges",
+                                       "candidates": ["Linear", "XGBoost", "KNN"], "plan": plan}, "cpu")
+    assert [c["status"] for c in out["candidates"]] == ["ok", "ok", "skipped"]
+    assert "time budget" in out["candidates"][2]["reason"]
+    # No time left to tune: the defaults stand and the best model is still fitted and scored.
+    assert len(out["tuning_trials"]) == 1 and out["best"] in ("Linear", "XGBoost") and out["test_metrics"]
 
 
 def test_oversized_svm_is_skipped_with_a_reason(monkeypatch):

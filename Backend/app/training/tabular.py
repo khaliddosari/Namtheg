@@ -10,6 +10,10 @@ folds:
    the noise in its CV folds.
 3. It is refit on the training split and scored once on the test split.
 
+Once the group's time budget is spent it starts no new candidate or tuning
+trial and goes straight to step 3 with what it has. Progress goes to the GPU
+service's logs.
+
 Gradient-boosted trees use early stopping on a slice of each training fold
 instead of a guessed tree count. SVM, KNN and linear models are ordinary
 scikit-learn estimators that cuml.accel runs on the GPU; `gpu_only` rejects
@@ -392,11 +396,16 @@ def _skip_reason(name: str, n_train: int) -> str | None:
     return None
 
 
+def _log(started: float, message: str) -> None:
+    print(f"[{time.monotonic() - started:6.0f}s] {message}", flush=True)
+
+
 def run(data: bytes, spec: dict, device: str) -> dict:
     """spec: {"task", "target", "candidates": [...], "plan": {"imbalance",
-    "tuning_trials", "tuning_timeout_seconds", "input_cols", "cleaning"}}.
-    input_cols and cleaning (both optional) are the raw columns a prediction
-    takes and how runtime.prepare turns them into this frame's columns."""
+    "tuning_trials", "tuning_timeout_seconds", "time_budget_seconds",
+    "input_cols", "cleaning"}}. input_cols and cleaning (both optional) are the
+    raw columns a prediction takes and how runtime.prepare turns them into
+    this frame's columns."""
     started = time.monotonic()
     task, target, plan = spec["task"], spec["target"], spec.get("plan", {})
     df = pd.read_parquet(io.BytesIO(data))
@@ -405,6 +414,12 @@ def run(data: bytes, spec: dict, device: str) -> dict:
     imbalance = plan.get("imbalance") or {}
     balanced = bool(classification and imbalance.get("strategy") == "balanced_class_weights")
     metric = imbalance.get("selection_metric") or ("accuracy" if classification else "r2")
+    budget = plan.get("time_budget_seconds")
+
+    def time_left() -> float:
+        return budget - (time.monotonic() - started) if budget else float("inf")
+
+    _log(started, f"{task}, {len(df):,} rows x {X.shape[1]} columns: {', '.join(spec['candidates'])}")
 
     class_labels, n_classes = None, 0
     if classification:
@@ -430,17 +445,23 @@ def run(data: bytes, spec: dict, device: str) -> dict:
     candidates = []
     for name in spec["candidates"]:
         reason = _skip_reason(name, len(y_train))
+        if reason is None and time_left() <= 0:
+            reason = "skipped: the group's time budget ran out"
         if reason:
             candidates.append({"name": name, "status": "skipped", "reason": reason})
+            _log(started, f"{name} {reason}")
             continue
+        t = time.monotonic()
         try:
             cv = cross_validate(name, DEFAULT_PARAMS[name], X_train, y_train, folds, task, device, balanced,
                                 n_classes, metric)
         except Exception as e:
             candidates.append({"name": name, "status": "failed", "reason": str(e)[:300]})
+            _log(started, f"{name} failed after {time.monotonic() - t:.0f}s: {str(e)[:200]}")
             continue
         candidates.append({"name": name, "status": "ok", "cv_mean": round(float(np.mean(cv)), 4),
                            "cv_std": round(float(np.std(cv)), 4), "cv_folds": [round(s, 4) for s in cv]})
+        _log(started, f"{name}: CV {metric} {np.mean(cv):.4f} in {time.monotonic() - t:.0f}s")
 
     result = {
         "task": task, "selection_metric": metric, "candidates": candidates,
@@ -457,11 +478,14 @@ def run(data: bytes, spec: dict, device: str) -> dict:
 
     top = max(ok, key=lambda c: c["cv_mean"])
     best = top["name"]
+    remaining = time_left()
     params, cv_mean, trials = tune(
         best, X_train, y_train, folds, task, device, balanced, n_classes, metric,
         start_score=top["cv_mean"], min_gain=cv_noise(top["cv_folds"]),
-        n_trials=int(plan.get("tuning_trials", 20)), timeout=int(plan.get("tuning_timeout_seconds", 300)),
+        n_trials=int(plan.get("tuning_trials", 20)) if remaining > 0 else 0,
+        timeout=int(min(plan.get("tuning_timeout_seconds", 300), max(remaining, 0))),
     )
+    _log(started, f"Tuned {best}: CV {metric} {cv_mean:.4f} after {len(trials) - 1} trials")
 
     with gpu_only(device):
         if FAMILY[best] == "gbdt":
@@ -477,6 +501,7 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         decision = (final.decision_function(X_test)
                     if classification and proba is None and n_classes == 2 and hasattr(final[-1], "decision_function")
                     else None)
+    _log(started, f"Fitted {best} on {len(y_train):,} rows; packaging it")
 
     est_spec, weights_format, weights = estimator_spec(best, final[-1])
     buf = io.BytesIO()
@@ -510,4 +535,5 @@ def run(data: bytes, spec: dict, device: str) -> dict:
         "weights_bytes": weights,
         "seconds": round(time.monotonic() - started, 1),
     })
+    _log(started, f"Done: test {metric} {result['test_score']:.4f}, model {len(result['bundle_bytes']) / 1e6:.1f} MB")
     return result

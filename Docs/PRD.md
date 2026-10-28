@@ -147,7 +147,9 @@ checked without training any model, so the audit itself never needs a GPU).
 - Classical models that are not natively GPU code (SVM, KNN, linear models) run through
   a GPU-accelerated scikit-learn compatibility layer; any call that silently falls back to CPU
   instead of the GPU is treated as a failure, not a degraded success.
-- Model groups train in parallel on separate GPU containers.
+- Model groups train in parallel on separate GPU containers. Each group has a time budget: once it
+  is spent the group starts no new candidate or tuning trial and fits its best model, and a group
+  still running well past it is stopped, so one stuck group never holds up the run.
 - Tuning uses a pruned search that abandons a clearly weak trial early and ends once several trials
   in a row fail to beat the best by more than its cross-validation noise; boosted trees use early
   stopping instead of a fixed training length.
@@ -263,3 +265,6 @@ relevant caveat, using only numbers verified against the run's own computed resu
   run, and without it only columns recorded at or after the outcome are dropped for timing. Before,
   it could silently pick an early moment (on a flight-delay table it assumed "before departure" and
   dropped the departure delay, taking R2 from about 0.95 to 0.06).
+- Model groups got a time budget and a hard stop, and cuML runs on plain GPU memory instead of
+  managed (UVM) memory. Under UVM the SVM/KNN/linear group of a 300,000-row run hung until the
+  2-hour GPU timeout; rerun on the same data, its ridge regression fit blocked in GPU allocation.
