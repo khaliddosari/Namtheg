@@ -10,7 +10,8 @@ const VIEWPORTS = [
   [1920, 1080], [1440, 900], [1366, 657], [1024, 768], [768, 1024], [390, 844], [360, 740],
 ];
 const PAGES = [
-  ["empty", "/"],
+  ["intro", "/"],
+  ["empty", "/?stage=data"],
   ["data", "/?run=reg-done&stage=data"],
   ["uploaded", "/?run=fresh&stage=data"],
   ["reading", "/?run=reading&stage=data"],

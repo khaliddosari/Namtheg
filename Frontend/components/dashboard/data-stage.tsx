@@ -120,6 +120,8 @@ export function DataStage({
   // Once started, show what the run was actually given.
   const shownTarget = started ? (status?.target ?? "") : target;
 
+  // Locked: the upload, target and profile in a row sized to their content,
+  // and the table across the rest of the page, before and after the upload.
   return (
     <div className="grid flex-1 gap-3 md:grid-cols-2 lock:h-full lock:grid-cols-12 lock:grid-rows-[auto_minmax(0,1fr)]">
       <UploadPanel
@@ -132,7 +134,7 @@ export function DataStage({
         onRetry={reload}
         onUploaded={onUploaded}
         onNewRun={onNewRun}
-        className="lock:col-span-4 lock:row-span-2"
+        className="lock:col-span-4"
       />
       <ConfigurePanel
         runId={runId}
@@ -148,7 +150,7 @@ export function DataStage({
         className="lock:col-span-5"
       />
       <ProfilePanel preview={preview} profile={profile} data={data} className="md:col-span-2 lock:col-span-3" />
-      <PreviewPanel preview={preview} profile={profile} data={data} target={shownTarget || null} className="md:col-span-2 lock:col-span-8" />
+      <PreviewPanel preview={preview} profile={profile} data={data} target={shownTarget || null} className="md:col-span-2 lock:col-span-12" />
     </div>
   );
 }
@@ -268,7 +270,9 @@ function UploadPanel({
           if (f && !uploaded && !sending) choose(f);
         }}
         className={cn(
-          "flex min-h-52 flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-primary/25 bg-muted/50 p-4 text-center transition-colors lock:min-h-0",
+          "flex min-h-52 flex-1 flex-col items-center justify-center gap-3 rounded-xl border p-4 text-center transition-colors lock:min-h-0",
+          // Dashed only while it takes a drop.
+          uploaded ? "border-border bg-muted/30" : "border-dashed border-primary/25 bg-muted/50",
           dragging && "border-primary bg-primary/10"
         )}
       >
@@ -352,7 +356,7 @@ function UploadPanel({
           </div>
         ) : uploaded ? (
           <>
-            <span className="flex size-12 items-center justify-center rounded-xl bg-green-500/15 text-green-300 ring-1 ring-green-400/30">
+            <span className="flex size-12 items-center justify-center rounded-xl bg-green-500/15 text-green-300 ring-1 ring-green-400/30 lock-short:hidden">
               <FileSpreadsheet className="size-6" />
             </span>
             <div className="min-w-0 max-w-full">
@@ -457,13 +461,17 @@ function UploadPanel({
         </p>
       )}
 
-      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        No dataset handy?
-        <a href="/insurance.csv" download="insurance.csv" className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto px-0")}>
+      {/* Not beside a dataset that is already here. */}
+      {(!uploaded || reading || failure) && (
+        <a
+          href="/insurance.csv"
+          download="insurance.csv"
+          className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto self-start px-0")}
+        >
           <Download data-icon="inline-start" />
           Download a sample (insurance.csv)
         </a>
-      </p>
+      )}
     </Panel>
   );
 }
@@ -526,7 +534,7 @@ function ConfigurePanel({
   return (
     <Panel
       title="Configure run"
-      caption="Pick the column to predict. Problem type, feature handling and missing values are detected automatically."
+      caption="Pick the column to predict. The rest is detected automatically."
       className={className}
     >
       {data === "loading" ? (

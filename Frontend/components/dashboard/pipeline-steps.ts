@@ -1,13 +1,14 @@
 /**
- * The six pipeline cells the training stage shows. The code and log lines are
- * illustrative of what each stage does; which cell is active comes from the
- * run's real stage (see STAGE_TO_STEP).
+ * The six pipeline cells the training stage shows, each with a one-line
+ * summary of what it does. The code and log lines are illustrative; which cell
+ * is active comes from the run's real stage (see STAGE_TO_STEP).
  */
 export const STEPS = [
   {
     key: "profile",
     fn: "profile_dataset(run_id)",
     label: "Profile Dataset",
+    summary: "Reads the table and maps column types and gaps.",
     code: `import pandas as pd
 import numpy as np
 
@@ -31,6 +32,7 @@ print("Missing values mapped.")`,
     key: "detect",
     fn: "detect_problem_type(run_id, target)",
     label: "Detect Problem Type",
+    summary: "Settles classification or regression and audits the data.",
     code: `# Determine ML objective (Classification vs Regression)
 target_col = df[target]
 cardinality = target_col.nunique()
@@ -53,6 +55,7 @@ print(f"Target variable has {cardinality} classes. Selected: {problem_type}")`,
     key: "eda",
     fn: "run_eda(run_id, target)",
     label: "Explore the Data",
+    summary: "The analyst agent investigates the data in a sandbox.",
     code: `# Run Automated Exploratory Data Analysis
 numeric_cols = df.select_dtypes(include=[np.number]).columns
 correlations = df[numeric_cols].corrwith(df[target])
@@ -72,6 +75,7 @@ print(correlations.sort_values(ascending=False).head(5))`,
     key: "feature_engineer",
     fn: "feature_engineer(run_id, target)",
     label: "Engineer Features",
+    summary: "Applies the cleaning and encodes the columns.",
     code: `from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 
@@ -94,6 +98,7 @@ df_clean = df.drop(columns=[col for col in df if df[col].isnull().mean() > 0.5])
     key: "train",
     fn: "train_model(run_id, target, problem_type)",
     label: "Train & Compare Models",
+    summary: "Trains every candidate on the H200, then tunes the best.",
     code: `from sklearn.model_selection import cross_val_score
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from sklearn.linear_model import LogisticRegression
@@ -123,6 +128,7 @@ scores = {name: cross_val_score(model, X, y, cv=5).mean() for name, model in mod
     key: "visualize",
     fn: "generate_visualization(run_id, target, problem_type)",
     label: "Generate Results",
+    summary: "Scores the champion, plots it and writes the report.",
     code: `import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 

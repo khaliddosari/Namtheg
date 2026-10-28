@@ -6,7 +6,8 @@ const { APP, MOCK, launch, resetMock } = require("./lib");
 
 const AXE = fs.readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
 const PAGES = [
-  ["empty", "/"],
+  ["intro", "/"],
+  ["empty", "/?stage=data"],
   ["data", "/?run=reg-done&stage=data"],
   ["uploaded", "/?run=fresh&stage=data"],
   ["reading", "/?run=reading&stage=data"],
@@ -98,6 +99,24 @@ async function keyboardWalk(page) {
   const a = await axe(page, [['[data-slot="dialog-content"]']]);
   console.log(`analyst dialog: violations ${a.violations.length}`, a.violations.map((v) => v.id).join(", "));
   if (a.violations.length) problems++;
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Zoom the plot" }).click();
+  await page.waitForTimeout(400);
+  const z = await axe(page, [['[data-slot="dialog-content"]']]);
+  console.log(`plot dialog: violations ${z.violations.length}`, z.violations.map((v) => v.id).join(", "));
+  if (z.violations.length) problems++;
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+
+  // Cancelling a run asks first.
+  await page.goto(`${APP}/?run=running&stage=training`);
+  await page.waitForTimeout(1500);
+  await page.locator("#stage-training").getByRole("button", { name: "Cancel run" }).click();
+  await page.waitForTimeout(400);
+  const c = await axe(page, [['[data-slot="dialog-content"]']]);
+  console.log(`cancel dialog: violations ${c.violations.length}`, c.violations.map((v) => v.id).join(", "));
+  if (c.violations.length) problems++;
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
 

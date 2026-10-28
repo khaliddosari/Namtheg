@@ -46,11 +46,58 @@ type LogFilter = "all" | "success" | "system";
 
 const humanize = (s?: string | null) => (s ? s.replace(/_/g, " ") : "-");
 
+// Older backends report the GPU before it starts as "NVIDIA H200 (requested)".
+const gpuName = (gpu?: string) => gpu?.replace(/\s*\(requested\)\s*$/i, "") || "-";
+
 function formatElapsed(seconds: number | null) {
   if (seconds == null) return "-";
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return m ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = String(seconds % 60).padStart(2, "0");
+  return h ? `${h}h ${String(m).padStart(2, "0")}m ${s}s` : m ? `${m}m ${s}s` : `${seconds}s`;
+}
+
+// How far one tick may pull the clock forward to meet an earlier start.
+const CLOCK_SLEW_MS = 250;
+
+/**
+ * The run's elapsed time as a clock that only counts up. Each diagnostics poll
+ * reports whole seconds since the run was queued, which puts the start at the
+ * moment the report arrived minus that many seconds. Network delay only ever
+ * makes a report look later, so the earliest start seen is the best one, and a
+ * second API container whose clock runs a little ahead cannot drag the time
+ * back. The clock ticks on this device's own time, on each second boundary, so
+ * it never skips or repeats a second; an earlier start found later is taken up
+ * a quarter second per tick. Once the run stops, the last value stays.
+ */
+function useRunClock(reported: number | null | undefined, live: boolean): number | null {
+  const start = useRef<number | null>(null);
+  const best = useRef<number | null>(null);
+  const [seconds, setSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (reported == null) return;
+    const estimate = Date.now() - reported * 1000;
+    if (best.current === null || estimate < best.current) best.current = estimate;
+    start.current ??= best.current;
+  }, [reported]);
+
+  useEffect(() => {
+    if (!live) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      if (start.current !== null && best.current !== null && best.current < start.current) {
+        start.current = Math.max(best.current, start.current - CLOCK_SLEW_MS);
+      }
+      const since = start.current === null ? null : Date.now() - start.current;
+      if (since !== null) setSeconds((prev) => Math.max(prev ?? 0, Math.floor(since / 1000)));
+      timer = setTimeout(tick, since === null ? 250 : 1000 - (since % 1000) + 20);
+    };
+    tick();
+    return () => clearTimeout(timer);
+  }, [live]);
+
+  return seconds;
 }
 
 export function TrainingStage({
@@ -97,26 +144,10 @@ export function TrainingStage({
     }
   }, [currentStep]);
 
-  // The server's elapsed time, ticked forward locally between polls. It counts
-  // from when the run was queued and keeps counting after the run ends, so a
-  // finished run shows the last value seen while it was live, or nothing.
-  const diagAt = useRef(0);
-  const lastLive = useRef<number | null>(null);
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    diagAt.current = Date.now();
-  }, [diagnostics]);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  const baseElapsed = diagnostics?.elapsed_seconds ?? null;
-  const liveElapsed = active && baseElapsed != null ? Math.floor(baseElapsed + (Date.now() - diagAt.current) / 1000) : null;
-  useEffect(() => {
-    if (liveElapsed != null) lastLive.current = liveElapsed;
-  });
-  const elapsed = active ? liveElapsed : lastLive.current;
+  // The server's elapsed time counts from when the run was queued and keeps
+  // counting after the run ends, so a finished run shows the last value seen
+  // while it was live, or nothing.
+  const elapsed = useRunClock(diagnostics?.elapsed_seconds, active);
 
   const doneCount = Math.max(0, Math.min(currentStep, STEPS.length));
   const goToData = (
@@ -125,6 +156,9 @@ export function TrainingStage({
     </Button>
   );
 
+  // Locked: the pipeline above the run's facts on the left, the notebook in
+  // the rest. On phones the facts and the cancel button come before the long
+  // notebook.
   return (
     <div className="grid flex-1 gap-3 md:grid-cols-2 lock:h-full lock:grid-cols-12 lock:grid-rows-[minmax(0,1fr)_auto]">
       {/* Pipeline */}
@@ -141,7 +175,7 @@ export function TrainingStage({
                   : `Stage ${Math.min(currentStep + 1, STEPS.length)} of ${STEPS.length}`
             : "Profile, detect, explore, engineer, train, report"
         }
-        className="lock:col-span-4 lock:row-span-2"
+        className="lock:col-span-4"
       >
         {loading ? (
           <PanelSkeleton rows={6} />
@@ -184,14 +218,14 @@ export function TrainingStage({
                   <li
                     key={step.key}
                     className={cn(
-                      "flex items-center gap-2.5 rounded-lg px-2 py-1.5 lock-short:py-1",
+                      "flex items-center gap-3 rounded-lg px-2 py-1.5 lock-short:py-1",
                       st === "active" && "bg-primary/10",
                       st === "error" && "bg-red-500/10"
                     )}
                   >
                     <span
                       className={cn(
-                        "flex size-6 shrink-0 items-center justify-center rounded-full ring-1 [&_svg]:size-3.5",
+                        "flex size-7 shrink-0 items-center justify-center rounded-full ring-1 lock-short:size-6 [&_svg]:size-3.5",
                         st === "done" && "bg-green-500/15 text-green-300 ring-green-400/35",
                         st === "active" && "bg-primary/15 text-primary ring-primary/45",
                         st === "error" && "bg-red-500/15 text-red-300 ring-red-400/40",
@@ -208,16 +242,21 @@ export function TrainingStage({
                         <span className="font-mono text-[0.6875rem] tabular-nums">{i + 1}</span>
                       )}
                     </span>
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-sm",
-                        st === "waiting" && "text-muted-foreground",
-                        st === "active" && "font-medium text-primary",
-                        st === "error" && "font-medium text-red-200"
-                      )}
-                    >
-                      {step.label}
-                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={cn(
+                          "truncate text-sm",
+                          st === "waiting" && "text-muted-foreground",
+                          st === "active" && "font-medium text-primary",
+                          st === "error" && "font-medium text-red-200"
+                        )}
+                      >
+                        {step.label}
+                      </p>
+                      <p className="text-xs text-muted-foreground lock:truncate lock-short:hidden" title={step.summary}>
+                        {step.summary}
+                      </p>
+                    </div>
                     {st === "done" && stepSeconds[i] != null && (
                       <span className="font-mono text-xs text-muted-foreground tabular-nums">{stepSeconds[i]}s</span>
                     )}
@@ -253,7 +292,37 @@ export function TrainingStage({
         )}
       </Panel>
 
-      {/* Notebook, with the diagnostics strip under it. */}
+      {/* Run diagnostics: the clock first, then what the run is and runs on. */}
+      <Panel
+        title="Run diagnostics"
+        caption="Recorded run state. Training runs on separate GPU containers."
+        actions={active && runId ? <CancelRun runId={runId} onCancelled={(s) => s?.status && setStatus(s)} /> : undefined}
+        className="lock:col-span-4 lock:row-start-2"
+      >
+        {loading ? (
+          <PanelSkeleton rows={2} />
+        ) : !started ? (
+          <PanelEmpty icon={<Gauge />} title="Nothing recorded" description="Stage, hardware and timing show here while a run trains." />
+        ) : (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lock-short:gap-y-2">
+            {(active || elapsed != null) && (
+              <Fact
+                label="Elapsed"
+                value={formatElapsed(elapsed)}
+                className="col-span-full lock-short:col-span-1"
+                valueClassName="font-mono text-2xl leading-tight tabular-nums lock-short:text-sm lock-short:leading-snug"
+              />
+            )}
+            <Fact label="Stage" value={humanize(diagnostics?.stage ?? status?.stage) || "waiting"} className="capitalize" />
+            <Fact label="Task" value={humanize(diagnostics?.task ?? status?.task)} />
+            <Fact label="Target" value={status?.target ?? "-"} title={status?.target ?? undefined} valueClassName="font-mono" />
+            <Fact label="Training on" value={gpuName(diagnostics?.gpu)} title={gpuName(diagnostics?.gpu)} />
+            <Fact label="GPU containers" value={diagnostics ? diagnostics.gpu_calls : "-"} valueClassName="font-mono tabular-nums" />
+          </dl>
+        )}
+      </Panel>
+
+      {/* Notebook */}
       <NotebookPanel
         runId={runId}
         started={started}
@@ -263,35 +332,8 @@ export function TrainingStage({
         stepSeconds={stepSeconds}
         error={failed ? (status?.error ?? (phase === "cancelled" ? "Cancelled." : "Stage failed.")) : null}
         goToData={goToData}
-        className="md:row-span-2 lock:col-span-8 lock:row-span-1"
+        className="md:col-span-2 lock:col-span-8 lock:col-start-5 lock:row-span-2 lock:row-start-1"
       />
-
-      {/* Run diagnostics */}
-      <Panel
-        title="Run diagnostics"
-        caption="Recorded run state. Training runs on separate GPU containers."
-        actions={active && runId ? <CancelRun runId={runId} onCancelled={(s) => s?.status && setStatus(s)} /> : undefined}
-        className="lock:col-span-8 lock:col-start-5 lock:row-start-2"
-      >
-        {loading ? (
-          <PanelSkeleton rows={2} />
-        ) : !started ? (
-          <PanelEmpty icon={<Gauge />} title="Nothing recorded" description="Stage, hardware and timing show here while a run trains." />
-        ) : (
-          <>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lock:grid-cols-6">
-              <Fact label="Stage" value={humanize(diagnostics?.stage ?? status?.stage) || "waiting"} className="capitalize" />
-              <Fact label="Task" value={humanize(diagnostics?.task ?? status?.task)} />
-              <Fact label="Target" value={status?.target ?? "-"} title={status?.target ?? undefined} valueClassName="font-mono" />
-              <Fact label="Training on" value={diagnostics?.gpu ?? "-"} title={diagnostics?.gpu} />
-              <Fact label="GPU containers" value={diagnostics ? diagnostics.gpu_calls : "-"} valueClassName="font-mono tabular-nums" />
-              {(active || elapsed != null) && (
-                <Fact label="Elapsed" value={formatElapsed(elapsed)} valueClassName="font-mono tabular-nums" />
-              )}
-            </dl>
-          </>
-        )}
-      </Panel>
     </div>
   );
 }

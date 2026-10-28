@@ -5,6 +5,8 @@ const fs = require("fs");
 const { APP, MOCK, SAMPLE_CSV: CSV, launch, shotsDir } = require("./lib");
 
 const OUT = shotsDir("suite");
+// The bare address opens the intro; the Data stage has its own link.
+const DATA = `${APP}/?stage=data`;
 
 const mock = (p, body) =>
   fetch(MOCK + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
@@ -81,9 +83,76 @@ const pager = (page, label) => page.getByRole("navigation", { name: "Stages" }).
 const shot = (page, name) => page.screenshot({ path: path.join(OUT, `${name}.png`) });
 const toastText = (page) => page.locator('[data-slot="toast"]').allInnerTexts();
 
+// ---------- intro
+test("intro: a bare link opens the poster, and its button opens Data", async (page, x) => {
+  await page.goto(APP);
+  await settle(page);
+  x.ok((await activeStage(page)) === "stage-intro", `lands on ${await activeStage(page)}`);
+  const intro = inStage(page, "intro");
+  await intro.getByRole("heading", { name: "From a raw table to a live model" }).waitFor();
+  for (const step of ["Upload a table", "The analyst investigates it", "Models train on an NVIDIA H200", "Results with a grounded explanation", "Deploy for live predictions"]) {
+    x.ok(await intro.getByText(step).count(), `explains "${step}"`);
+  }
+  const nav = page.getByRole("navigation", { name: "Stages" });
+  x.ok((await nav.getByRole("button", { name: "Intro" }).getAttribute("aria-current")) === "step", "the pager marks the intro");
+  const numbers = (await nav.getByRole("listitem").allInnerTexts()).slice(1).map((t) => t.trim().match(/^\d+/)?.[0]);
+  x.ok(JSON.stringify(numbers) === JSON.stringify(["1", "2", "3", "4"]), `stages numbered 1 to 4: ${numbers}`);
+  await shot(page, "intro");
+  await intro.getByRole("button", { name: "Start with your data" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("stage") === "data");
+  x.ok((await page.evaluate(() => document.activeElement?.id)) === "stage-data", "focus lands on the Data stage");
+  await inStage(page, "data").getByRole("button", { name: "Browse files" }).waitFor();
+  await page.reload();
+  await settle(page);
+  x.ok((await activeStage(page)) === "stage-data", "a reload stays on Data");
+  await page.locator("header").getByRole("button", { name: "Namtheg, back to the intro" }).click();
+  await settle(page);
+  x.ok((await activeStage(page)) === "stage-intro" && !new URL(page.url()).searchParams.has("stage"), `the brand goes back to the intro: ${page.url()}`);
+});
+
+test("intro: deep links still open their stage, and a run stays loaded on the intro", async (page, x) => {
+  for (const [url, id] of [
+    ["/?run=reg-done&stage=deploy", "stage-deploy"],
+    ["/?run=fresh&stage=data", "stage-data"],
+    ["/?stage=training", "stage-training"],
+    ["/?run=reg-done&stage=intro", "stage-intro"],
+  ]) {
+    await page.goto(APP + url);
+    await settle(page);
+    x.ok((await activeStage(page)) === id, `${url} -> ${await activeStage(page)}`);
+  }
+  await inStage(page, "intro").getByRole("button", { name: "Start with your data" }).click();
+  await inStage(page, "data").getByText("insurance.csv").first().waitFor();
+  const params = new URL(page.url()).searchParams;
+  x.ok(params.get("run") === "reg-done" && params.get("stage") === "data", `the run is kept: ${page.url()}`);
+  // A run link without a stage waits on Data, not the intro, and says there when the run is missing.
+  await page.goto(`${APP}/?run=nope`);
+  await inStage(page, "data").getByText("Run not found").waitFor();
+  x.ok((await activeStage(page)) === "stage-data", `an unknown run lands on ${await activeStage(page)}`);
+}, { allow: [{ status: 404 }] });
+
+test("intro: phones get the poster and a pager that fits", async (page, x) => {
+  await page.goto(APP);
+  await inStage(page, "intro").getByRole("button", { name: "Start with your data" }).waitFor();
+  const fits = await page.evaluate(() =>
+    [...document.querySelectorAll('nav[aria-label="Stages"] button')]
+      .filter((b) => b.offsetWidth)
+      .every((b) => {
+        const r = b.getBoundingClientRect();
+        return r.left >= 0 && r.right <= window.innerWidth;
+      })
+  );
+  x.ok(fits, "every pager button is on screen");
+  await pager(page, "Results").click();
+  await settle(page);
+  x.ok((await pager(page, "Results").innerText()).includes("Results"), "the current stage shows its name");
+  x.ok(!(await pager(page, "Training").innerText()).includes("Training"), "the others show their number");
+  await shot(page, "intro-phone");
+}, { viewport: { width: 360, height: 740 }, touch: true });
+
 // ---------- upload
 test("upload: browse, R2 409 falls back to the proxy", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   x.ok((await stage(page)) === "data", "should stay on data");
   x.ok(/run=/.test(page.url()), "url should carry the run");
@@ -92,13 +161,13 @@ test("upload: browse, R2 409 falls back to the proxy", async (page, x) => {
 
 test("upload: R2 direct PUT when configured", async (page, x) => {
   await mock("/__mock/config", { r2: true });
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   x.ok(/run=/.test(page.url()), "url should carry the run");
 });
 
 test("upload: drag and drop onto the dropzone", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   const csv = fs.readFileSync(CSV, "utf8");
   await page.evaluate((text) => {
     const dt = new DataTransfer();
@@ -114,7 +183,7 @@ test("upload: drag and drop onto the dropzone", async (page, x) => {
 
 test("upload: wrong file types, image zips included, are refused", async (page, x) => {
   for (const name of ["photo.png", "pets.zip"]) {
-    await page.goto(APP);
+    await page.goto(DATA);
     await page.setInputFiles("#dataset-input", { name, mimeType: "application/octet-stream", buffer: Buffer.from("x") });
     await page.getByRole("alert").filter({ hasText: "Unsupported file type" }).waitFor();
     x.ok(!(await page.getByRole("button", { name: "Upload and profile" }).count()), `${name} should not be offered for upload`);
@@ -126,26 +195,26 @@ test("upload: over 2 GB is refused", async (page, x) => {
     const size = Object.getOwnPropertyDescriptor(Blob.prototype, "size");
     Object.defineProperty(File.prototype, "size", { get() { return this.name === "huge.csv" ? 3 * 1024 ** 3 : size.get.call(this); } });
   });
-  await page.goto(APP);
+  await page.goto(DATA);
   await page.setInputFiles("#dataset-input", { name: "huge.csv", mimeType: "text/csv", buffer: Buffer.from("a,b\n1,2\n") });
   await page.getByRole("alert").filter({ hasText: "2 GB" }).waitFor();
 });
 
 test("upload: empty file is refused", async (page) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await page.setInputFiles("#dataset-input", { name: "empty.csv", mimeType: "text/csv", buffer: Buffer.alloc(0) });
   await page.getByRole("alert").filter({ hasText: "empty" }).waitFor();
 });
 
 async function uploadSampleDirect(page) {
-  await page.goto(APP);
+  await page.goto(DATA);
   await page.setInputFiles("#dataset-input", CSV);
   await page.getByRole("button", { name: "Upload and profile" }).click();
 }
 
 test("upload: the progress bar moves while a large file is sent", async (page, x, ctx) => {
   await mock("/__mock/config", { r2: true });
-  await page.goto(APP);
+  await page.goto(DATA);
   const cdp = await ctx.newCDPSession(page);
   await cdp.send("Network.enable");
   await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: 400 * 1024 });
@@ -214,7 +283,7 @@ test("upload: a read that fails at once can be tried again", async (page) => {
 
 // ---------- configure
 test("configure: combobox search picks a target and highlights it", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   await page.locator("#target-column").click();
   await page.locator("#target-column").fill("bm");
@@ -225,7 +294,7 @@ test("configure: combobox search picks a target and highlights it", async (page,
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
 test("configure: predicting a column is the only option", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   for (const name of ["Find groups", "Forecast over time"]) {
     x.ok(!(await page.getByRole("button", { name }).count()), `no "${name}" mode`);
@@ -236,7 +305,7 @@ test("configure: predicting a column is the only option", async (page, x) => {
 }, { allow: [{ status: 409, url: "/uploads/direct" }] });
 
 test("configure: a stated prediction time reaches the run and is shown once started", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   await page.locator("#prediction-time").fill("  when the quote   is issued ");
   await page.getByRole("button", { name: "Start training" }).click();
@@ -251,7 +320,7 @@ test("configure: a stated prediction time reaches the run and is shown once star
 
 // ---------- training
 test("training: start slides to training, tracks live stages, lands on results", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   await page.getByRole("button", { name: "Start training" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("stage") === "training");
@@ -271,7 +340,7 @@ test("training: start slides to training, tracks live stages, lands on results",
 }, { allow: [{ status: 409, url: "/uploads/direct" }, { status: 409, url: "/result" }, { status: 409, url: "/model_schema" }] });
 
 test("training: cancel through the dialog", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   await page.getByRole("button", { name: "Start training" }).click();
   await inStage(page, "training").getByRole("button", { name: "Cancel run" }).click();
@@ -300,6 +369,30 @@ test("training: cancelled run", async (page) => {
 test("training: queued run", async (page) => {
   await page.goto(`${APP}/?run=queued`);
   await inStage(page, "training").getByText("Waiting for a GPU container").waitFor();
+});
+
+test("training: the elapsed clock counts up a second at a time, never back", async (page, x) => {
+  await page.goto(`${APP}/?run=running&stage=training`);
+  const t = inStage(page, "training");
+  await t.getByText("NVIDIA H200", { exact: true }).waitFor();
+  x.ok(!(await t.getByText("requested").count()), "no 'requested' next to the GPU");
+  const clock = t.locator("dt", { hasText: "Elapsed" }).locator("xpath=following-sibling::dd");
+  const seconds = (text) => {
+    const m = text.trim().match(/^(?:(\d+)h )?(?:(\d+)m )?(\d+)s$/);
+    return m ? Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3]) : NaN;
+  };
+  for (let i = 0; i < 40 && Number.isNaN(seconds(await clock.innerText().catch(() => ""))); i++) await page.waitForTimeout(100);
+  // Ten seconds spans three diagnostics polls, where the old clock jumped.
+  const seen = [];
+  for (const end = Date.now() + 10000; Date.now() < end; ) {
+    seen.push(seconds(await clock.innerText()));
+    await page.waitForTimeout(150);
+  }
+  const steps = seen.slice(1).map((v, i) => v - seen[i]);
+  x.ok(seen.every(Number.isFinite), `the clock reads as a time: ${seen}`);
+  x.ok(steps.every((d) => d === 0 || d === 1), `it moves a second at a time: ${seen.join(" ")}`);
+  const gained = seen.at(-1) - seen[0];
+  x.ok(gained >= 8 && gained <= 11, `it counted ${gained}s in 10s`);
 });
 
 // ---------- results
@@ -361,12 +454,59 @@ test("results: export PNG and PDF", async (page, x) => {
   await page.goto(`${APP}/?run=reg-done&stage=results`);
   const r = inStage(page, "results");
   await r.getByText("GradientBoostingRegressor").first().waitFor();
+  // Measure the off-screen report as the export draws it: card order, text
+  // cut off, and space left empty at the bottom of each card.
+  await page.evaluate(() => {
+    window.__exportLayouts = [];
+    new MutationObserver((records) => {
+      for (const node of records.flatMap((rec) => [...rec.addedNodes])) {
+        const clone = node.querySelector?.(".__export-clone");
+        if (!clone) continue;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const box = (el) => el.getBoundingClientRect();
+            const cards = [...clone.querySelectorAll("[data-export-grid] > *")].map((card) => {
+              const body = card.lastElementChild;
+              const content = Math.max(...[...body.children].map((c) => box(c).bottom));
+              return { title: card.querySelector("h2")?.textContent, spare: Math.round(box(body).bottom - content) };
+            });
+            const clipped = [...clone.querySelectorAll("*")]
+              .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
+              .filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== "visible")
+              .map((el) => el.textContent.trim().slice(0, 40));
+            window.__exportLayouts.push({ header: clone.querySelector(":scope > header")?.innerText ?? "", cards, clipped });
+          })
+        );
+      }
+    }).observe(document.body, { childList: true });
+  });
+
   const [png] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), r.getByRole("button", { name: "Export PNG" }).click()]);
-  await png.saveAs(path.join(OUT, "export.png"));
+  const pngPath = path.join(OUT, "export.png");
+  await png.saveAs(pngPath);
   x.ok((await toastText(page)).join(" ").includes("Report saved as PNG"), "png toast");
+  const head = fs.readFileSync(pngPath);
+  const [width, height] = [head.readUInt32BE(16), head.readUInt32BE(20)];
+  x.ok(width === 1920 && height > 2000 && height < 8000, `png is ${width}x${height}`);
+  const [layout] = await page.evaluate(() => window.__exportLayouts);
+  x.ok(layout, "the export drew a report");
+  x.ok(["Namtheg", "Model report", "insurance.csv", "predicting charges", "reg-done", "Exported"].every((t) => layout.header.includes(t)), `header: ${layout.header}`);
+  const titles = layout.cards.map((c) => c.title);
+  x.ok(JSON.stringify(titles) === JSON.stringify(["Champion model", "R²", "Predicted vs actual", "Feature importance", "Model selection"]), `cards: ${titles}`);
+  x.ok(!layout.clipped.length, `text cut off: ${JSON.stringify(layout.clipped)}`);
+  const blank = layout.cards.filter((c) => c.spare > 120);
+  x.ok(!blank.length, `empty space at the bottom of ${JSON.stringify(blank)}`);
+
   const [pdf] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), r.getByRole("button", { name: "Export PDF" }).click()]);
-  await pdf.saveAs(path.join(OUT, "export.pdf"));
-  x.ok(fs.statSync(path.join(OUT, "export.pdf")).size > 50000, "pdf has content");
+  const pdfPath = path.join(OUT, "export.pdf");
+  await pdf.saveAs(pdfPath);
+  const doc = fs.readFileSync(pdfPath, "latin1");
+  const pages = doc.match(/\/Type \/Page\b(?!s)/g)?.length ?? 0;
+  // A4 in points; jsPDF writes them as 595.2799999999999727 and 841.8899999999999864.
+  const a4 = doc.match(/\/MediaBox \[0 0 595\.2(?:8|79+\d*) 841\.8(?:9|89+\d*)\]/g)?.length ?? 0;
+  x.ok(pages >= 2 && pages <= 4 && a4 === pages, `pdf: ${pages} pages, ${a4} of them A4`);
+  x.ok(doc.includes("/Title (Namtheg model report: GradientBoostingRegressor for charges)"), "pdf title");
+  x.ok(fs.statSync(pdfPath).size > 50000, "pdf has content");
 });
 
 test("results: results that never arrive offer a retry", async (page, x) => {
@@ -547,7 +687,7 @@ test("nav: pager, arrow keys, and where arrows are ignored", async (page, x) => 
   await settle(page);
   x.ok((await activeStage(page)) === "stage-data", "ignored inside a toggle group");
   const inert = await page.evaluate(() => [...document.querySelectorAll("main > div > section")].map((s) => s.inert));
-  x.ok(inert.filter(Boolean).length === 3 && !inert[0], `inert pattern ${inert}`);
+  x.ok(inert.filter(Boolean).length === 4 && !inert[1], `inert pattern ${inert}`);
 });
 
 test("nav: arrow keys are ignored inside the target combobox", async (page, x) => {
@@ -610,7 +750,7 @@ test("nav: resize keeps the current stage", async (page, x) => {
     await settle(page, 600);
     const ok = await page.evaluate(() => {
       const t = document.querySelector("main > div");
-      return Math.round(t.scrollLeft / t.clientWidth) === 2 && t.scrollLeft % t.clientWidth === 0;
+      return Math.round(t.scrollLeft / t.clientWidth) === 3 && t.scrollLeft % t.clientWidth === 0;
     });
     x.ok(ok && (await activeStage(page)) === "stage-results", `after resize to ${v.width}x${v.height}`);
   }
@@ -623,7 +763,7 @@ const toastWith = (page, text) => page.locator('[data-slot="toast"]').filter({ h
 const modal = (page) => page.locator('[data-slot="dialog-content"]');
 
 test("account: create one with an emailed code, the open run is saved, sign out", async (page, x) => {
-  await page.goto(APP);
+  await page.goto(DATA);
   await uploadCsv(page);
   const header = page.locator("header");
   await header.getByRole("button", { name: "Sign in" }).click();
@@ -736,7 +876,7 @@ test("ux: reduced motion pages instantly", async (page, x) => {
     const t = document.querySelector("main > div");
     return t.scrollLeft / t.clientWidth;
   });
-  x.ok(left === 3, `instant jump expected, at ${left}`);
+  x.ok(left === 4, `instant jump expected, at ${left}`);
 }, { reducedMotion: "reduce" });
 
 test("ux: reduced transparency makes surfaces nearly opaque", async (page, x, ctx) => {

@@ -190,6 +190,21 @@ relevant caveat, using only numbers verified against the run's own computed resu
   protects the email sender's quota.
 - The feature stays hidden until the server can send email.
 
+### 5.8 Dashboard
+- One page of slides: an intro poster that says what Namtheg does (upload a table, the analyst
+  investigates it, models train on an NVIDIA H200, results with a grounded explanation, deploy for
+  live predictions) with a button to the Data stage, then the stages, numbered 1 to 4: Data,
+  Training, Results, Deploy. A bare link opens the intro; `/?run=<id>&stage=<stage>` opens a stage,
+  and a run's link without a stage opens wherever the run has got to.
+- The training stage shows the run's elapsed time as a clock that only counts up, a second at a
+  time, on the browser's own clock from the earliest start the server's reports imply.
+- The results report exports as a PNG and as an A4 PDF laid out as a document: a header naming the
+  run, dataset and target, every card at full height with no text cut off, and PDF pages that
+  break between cards.
+- On a desktop window each stage fills the screen: cards that hold little are sized to their
+  content, and the table, notebook, plot or prediction form takes the rest. On a phone the cards
+  stack, with what a person acts on first.
+
 ---
 
 ## 6. Non-Functional Requirements
@@ -299,3 +314,12 @@ relevant caveat, using only numbers verified against the run's own computed resu
   the air and the landing time dropped, the best formula reaches 0.9475 and the analysis is accepted.
   For a late flag as the target, the audit finds that the delay deciding it is exactly the departure
   delay plus taxi-out, time in the air and taxi-in, minus the scheduled time (R2 1.0000).
+- The dashboard opens on an intro slide that explains the platform (§5.8); stage links are
+  unchanged, and the stage bar numbers stages 1 to 4 instead of 01 to 04. The training clock no
+  longer jumps: it added the time since the previous poll to each new reading for one render, so
+  every 3 seconds it showed about 3 seconds ahead and then fell back. The PNG and PDF exports were
+  rebuilt as a report: before, cards stretched to the tallest one left large empty areas, long text
+  was cut off, nothing said which run it was, and the PDF was a single page the height of the whole
+  report. The GPU reads "NVIDIA H200" before the training container reports it, not "NVIDIA H200
+  (requested)". Every stage's cards were resized and placed by what they show, on desktops and
+  phones.

@@ -1,24 +1,33 @@
 /**
  * PNG and PDF export of the results report.
  *
- * The report is cloned into an off-screen sandbox 1280px wide and rasterised
- * with html-to-image. Its grid is laid out with container queries on the
- * report itself (@container/report), so the clone gets the wide layout at any
- * viewport width, and the page-locked heights (the `lock` variant, a container
- * query on the stage page) do not apply outside the page, so every card comes
- * out at full height.
+ * The report is cloned into an off-screen sandbox and laid out there as a
+ * document rather than as the dashboard: a header with the run's details that
+ * only the export shows, the champion beside its score, the plot beside the
+ * feature importances, and model selection across the full width with both
+ * the leaderboard and the tuning. Each card's place comes from its
+ * data-export-span. Text the dashboard truncates to fit is shown in full. The
+ * clone sits outside the stage page, so the page-locked heights (the `lock`
+ * variant, a container query on the page) do not apply and every card comes
+ * out at its full height.
+ *
+ * html-to-image rasterises the clone. The PNG is that image; the PDF cuts it
+ * into A4 pages between rows of cards, or between the rows of a card taller
+ * than a page.
  */
 
-const CAPTURE_WIDTH = 1280;
-// The page background, as a colour a canvas can fill: oklch(0.145 0.032 263).
+// 960 CSS px: a 1920 px wide PNG, and on an A4 page the smallest text still
+// comes out at about 8 pt.
+const CAPTURE_WIDTH = 960;
+const CAPTURE_PADDING = 24;
+// The space between rows of cards (gap-3 on the grid, mb-3 under the header).
+const ROW_GAP = 12;
+const PIXEL_RATIO = 2;
+// Below the largest canvas iOS Safari will draw, so a long report still exports.
+const MAX_CANVAS_AREA = 16_000_000;
+// The page background, as a colour a canvas and a PDF can fill: oklch(0.145 0.032 263).
+// Flat rather than the dashboard's wash, so PDF pages meet their margins without a seam.
 const EXPORT_BACKGROUND = "#040a17";
-// The dark wash from globals.css, painted onto the clone since the fixed
-// body::before layer is not part of it.
-const EXPORT_WASH = [
-  "radial-gradient(50rem 34rem at 6% -4%, oklch(0.55 0.14 250 / 0.34), transparent 60%)",
-  "radial-gradient(44rem 32rem at 100% 4%, oklch(0.62 0.12 232 / 0.2), transparent 62%)",
-  "radial-gradient(46rem 40rem at 88% 100%, oklch(0.45 0.16 276 / 0.3), transparent 62%)",
-].join(", ");
 
 const FONT_BASE = "https://cdn.jsdelivr.net/gh/khaliddosari/thmanyah-fonts@v1/thmanyah%20typeface/";
 const EXPORT_FONTS: [family: string, weight: number, file: string][] = [
@@ -63,7 +72,27 @@ async function getFontEmbedCSS(): Promise<string> {
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
 
-async function captureReport(node: HTMLElement): Promise<{ dataUrl: string; width: number; height: number }> {
+// Safari and every iOS browser: WebKit paints the SVG html-to-image builds
+// before that SVG's fonts and pictures have loaded the first time, which
+// leaves text in fallback fonts and the plot blank. A second pass is whole.
+const isAppleWebKit = () => /AppleWebKit/i.test(navigator.userAgent) && !/Chrome\//i.test(navigator.userAgent);
+
+/** One band of the report: the header, or a row of cards side by side. */
+interface Row {
+  top: number;
+  bottom: number;
+  /** Where a page can end inside the row: between its list items, table rows or sections. Only a row of one card has any. */
+  breaks: number[];
+}
+
+interface Snapshot {
+  dataUrl: string;
+  width: number;
+  height: number;
+  rows: Row[];
+}
+
+async function captureReport(node: HTMLElement): Promise<Snapshot> {
   const sandbox = document.createElement("div");
   Object.assign(sandbox.style, {
     position: "fixed",
@@ -80,22 +109,30 @@ async function captureReport(node: HTMLElement): Promise<{ dataUrl: string; widt
     width: `${CAPTURE_WIDTH}px`,
     maxWidth: `${CAPTURE_WIDTH}px`,
     height: "auto",
-    padding: "24px",
-    background: `${EXPORT_WASH}, ${EXPORT_BACKGROUND}`,
+    padding: `${CAPTURE_PADDING}px`,
+    background: EXPORT_BACKGROUND,
   });
   clone.querySelectorAll("[data-export-ignore]").forEach((el) => el.remove());
-  // Views that sit behind a switch on screen (leaderboard and tuning) all print.
+  // The header and the views that sit behind a switch on screen (leaderboard and tuning) all print.
   clone.querySelectorAll("[data-export-show]").forEach((el) => el.removeAttribute("hidden"));
-  // A card that fills the space an ignored card leaves behind.
-  clone.querySelectorAll<HTMLElement>("[data-export-span]").forEach((el) => {
-    const span = el.dataset.exportSpan;
-    el.style.gridColumn = `span ${span} / span ${span}`;
+  clone.querySelectorAll("[data-export-date]").forEach((el) => {
+    el.textContent = new Date().toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
   });
+  // The report's own grid: twelve columns, each card spanning what its data-export-span says.
+  const grid = clone.querySelector<HTMLElement>("[data-export-grid]");
+  if (grid) {
+    Object.assign(grid.style, { gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gridTemplateRows: "none", height: "auto" });
+    grid.querySelectorAll<HTMLElement>("[data-export-span]").forEach((el) => {
+      const span = el.dataset.exportSpan;
+      el.style.gridColumn = `span ${span} / span ${span}`;
+    });
+  }
 
-  // Scroll areas open up to their full content, clamps release, and no
-  // scrollbar gutter is left behind in the image. Backdrop blur goes too: an
-  // image has nothing behind it to blur, and inside html-to-image's SVG it
-  // clips each card to a rectangle offset from where the card is drawn.
+  // Scroll areas open up to their full content, clamps and truncation
+  // release, and no scrollbar gutter is left behind in the image. Backdrop
+  // blur goes too: an image has nothing behind it to blur, and inside
+  // html-to-image's SVG it clips each card to a rectangle offset from where
+  // the card is drawn.
   const reset = document.createElement("style");
   reset.textContent = `
     .__export-clone, .__export-clone * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
@@ -104,6 +141,8 @@ async function captureReport(node: HTMLElement): Promise<{ dataUrl: string; widt
       overflow: visible !important; max-height: none !important; scrollbar-width: none !important;
     }
     .__export-clone [class*="line-clamp"] { -webkit-line-clamp: unset !important; display: block !important; }
+    .__export-clone .truncate { overflow: visible !important; text-overflow: clip !important; white-space: normal !important; }
+    .__export-clone td, .__export-clone th { max-width: none !important; }
     .__export-clone .flex-col > .flex-1 { flex: 0 0 auto !important; }
     .__export-clone .flex-col > .min-h-0 { min-height: auto !important; }
     .__export-clone ::-webkit-scrollbar { display: none !important; }
@@ -133,21 +172,90 @@ async function captureReport(node: HTMLElement): Promise<{ dataUrl: string; widt
     const fontCSS = await getFontEmbedCSS();
     await nextFrame();
 
-    const rect = clone.getBoundingClientRect();
-    const height = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight, rect.height));
+    const origin = clone.getBoundingClientRect().top;
+    const height = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight, clone.getBoundingClientRect().height));
+    const rows = measureRows(clone, origin);
+    const ratio = Math.min(PIXEL_RATIO, Math.sqrt(MAX_CANVAS_AREA / (CAPTURE_WIDTH * height)));
+
     const { toPng } = await import("html-to-image");
-    const dataUrl = await toPng(clone, {
+    const options = {
       backgroundColor: EXPORT_BACKGROUND,
-      pixelRatio: 2,
+      pixelRatio: ratio,
       cacheBust: true,
       width: CAPTURE_WIDTH,
       height,
       fontEmbedCSS: fontCSS,
-    });
-    return { dataUrl, width: CAPTURE_WIDTH, height };
+    };
+    if (isAppleWebKit()) await toPng(clone, options);
+    const dataUrl = await toPng(clone, options);
+    return { dataUrl, width: CAPTURE_WIDTH, height, rows };
   } finally {
     document.body.removeChild(sandbox);
   }
+}
+
+/** The report's bands, top to bottom, in CSS px from the top of the clone. */
+function measureRows(clone: HTMLElement, origin: number): Row[] {
+  const y = (el: Element) => Math.round(el.getBoundingClientRect().top - origin);
+  const blocks = [clone.querySelector(":scope > header"), ...(clone.querySelector("[data-export-grid]")?.children ?? [])].filter(
+    (el): el is Element => !!el && el.getBoundingClientRect().height > 0
+  );
+  const bands = new Map<number, { bottom: number; cards: Element[] }>();
+  for (const el of blocks) {
+    const top = y(el);
+    const band = bands.get(top) ?? { bottom: top, cards: [] };
+    band.bottom = Math.max(band.bottom, Math.round(el.getBoundingClientRect().bottom - origin));
+    band.cards.push(el);
+    bands.set(top, band);
+  }
+  return [...bands.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([top, { bottom, cards }]) => ({
+      top,
+      bottom,
+      breaks:
+        cards.length === 1
+          ? [...new Set(Array.from(cards[0].querySelectorAll("li, tr, section, h3"), y))].filter((b) => b > top && b < bottom).sort((a, b) => a - b)
+          : [],
+    }));
+}
+
+/**
+ * Where each page starts and ends, in CSS px. A page ends in the gap above
+ * the last row of cards that starts on it, so cards are not cut, unless the
+ * row running past its end is taller than any page: that one is cut between
+ * its own rows. Nothing is cut in the first quarter of a page, so no page is a
+ * sliver.
+ */
+function paginate(height: number, pageHeight: number, rows: Row[]): [number, number][] {
+  const pages: [number, number][] = [];
+  let top = 0;
+  while (height - top > pageHeight) {
+    const limit = top + pageHeight;
+    const floor = top + pageHeight / 4;
+    // Mid-gap, so the edge a card draws just outside itself stays with it.
+    const gaps = rows.map((r) => r.top - ROW_GAP / 2);
+    let cut = Math.max(0, ...gaps.filter((g) => g > floor && g <= limit));
+    const across = rows.find((r) => r.top < limit && r.bottom > limit);
+    if (across && (!cut || across.bottom - across.top > pageHeight)) {
+      const inside = across.breaks.filter((b) => b > floor && b <= limit);
+      if (inside.length) cut = Math.max(...inside);
+    }
+    if (!cut) cut = limit;
+    pages.push([top, cut]);
+    top = cut;
+  }
+  pages.push([top, height]);
+  return pages;
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("snapshot failed to decode"));
+    img.src = src;
+  });
 }
 
 export async function exportReportPng(node: HTMLElement, filename: string) {
@@ -158,39 +266,48 @@ export async function exportReportPng(node: HTMLElement, filename: string) {
   link.click();
 }
 
-export async function exportReportPdf(node: HTMLElement, filename: string) {
+// A4 portrait, in points.
+const PAGE_WIDTH = 595.28;
+const PAGE_HEIGHT = 841.89;
+const FOOTER = 26;
+
+export async function exportReportPdf(node: HTMLElement, filename: string, title: string) {
   const snap = await captureReport(node);
+  const img = await loadImage(snap.dataUrl);
+  // Image pixels per CSS pixel, as drawn: html-to-image scales a very tall
+  // report down further than the pixel ratio it was given.
+  const ratio = img.naturalWidth / snap.width;
 
-  // JPEG at 92%: PNG is lossless and would balloon a tall report's PDF past
-  // 40 MB; this is visually the same and an order of magnitude smaller.
-  const jpeg = await new Promise<string>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return reject(new Error("2d context unavailable"));
-      ctx.fillStyle = EXPORT_BACKGROUND;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      resolve(canvas.toDataURL("image/jpeg", 0.92));
-    };
-    img.onerror = () => reject(new Error("snapshot failed to decode"));
-    img.src = snap.dataUrl;
-  });
+  // The report spans the page width; its own padding is the side margin, and
+  // pages after the first get the same margin on top.
+  const scale = PAGE_WIDTH / snap.width;
+  const margin = CAPTURE_PADDING * scale;
+  const pages = paginate(snap.height, (PAGE_HEIGHT - margin - FOOTER) / scale, snap.rows);
 
-  // One page exactly the size of the snapshot (1px = 0.75pt at 96dpi): no
-  // pagination, no letterboxing.
   const { jsPDF } = await import("jspdf");
-  const widthPt = snap.width * 0.75;
-  const heightPt = snap.height * 0.75;
-  const pdf = new jsPDF({
-    orientation: widthPt > heightPt ? "landscape" : "portrait",
-    unit: "pt",
-    format: [widthPt, heightPt],
-    compress: true,
+  const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4", compress: true });
+  pdf.setProperties({ title, creator: "Namtheg" });
+  pages.forEach(([top, bottom], i) => {
+    // JPEG at 92%: PNG is lossless and would make a long report's PDF tens of
+    // megabytes; this looks the same and is an order of magnitude smaller.
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = Math.round((bottom - top) * ratio);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context unavailable");
+    ctx.fillStyle = EXPORT_BACKGROUND;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, Math.round(top * ratio), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+
+    if (i > 0) pdf.addPage("a4", "portrait");
+    pdf.setFillColor(EXPORT_BACKGROUND);
+    pdf.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, "F");
+    pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, i === 0 ? 0 : margin, PAGE_WIDTH, (bottom - top) * scale);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(139, 149, 173);
+    pdf.text("Namtheg model report", margin, PAGE_HEIGHT - 12);
+    pdf.text(`Page ${i + 1} of ${pages.length}`, PAGE_WIDTH - margin, PAGE_HEIGHT - 12, { align: "right" });
   });
-  pdf.addImage(jpeg, "JPEG", 0, 0, widthPt, heightPt);
   pdf.save(filename);
 }

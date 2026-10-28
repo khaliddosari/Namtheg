@@ -24,16 +24,21 @@ export function Brand({ className }: { className?: string }) {
   );
 }
 
-/** Three joined nodes: the brand mark, drawn in theme colours so it follows the hue. */
+/**
+ * Three joined nodes: the brand mark, drawn in the text colour (the accent
+ * unless told otherwise) so it follows the hue. currentColor rather than fill
+ * and stroke classes, because the report export's rasteriser draws the first
+ * and drops the second.
+ */
 export function BrandMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className={cn("size-5", className)} fill="none">
-      <g className="stroke-primary" strokeWidth="2" strokeLinecap="round">
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={cn("size-5 text-primary", className)} fill="none">
+      <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
         <line x1="12" y1="6" x2="6" y2="18" />
         <line x1="12" y1="6" x2="18" y2="18" />
         <line x1="6" y1="18" x2="18" y2="18" />
       </g>
-      <g className="fill-primary">
+      <g fill="currentColor">
         <circle cx="12" cy="6" r="2.6" />
         <circle cx="6" cy="18" r="2.6" />
         <circle cx="18" cy="18" r="2.6" />

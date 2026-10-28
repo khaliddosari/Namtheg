@@ -10,6 +10,7 @@ import type { RunStatus } from "@/lib/api";
 import { isRunActive, isRunFailed, isUploadFailed, landingStage, useRun } from "./use-run";
 import { AccountControl } from "./account";
 import { Pager } from "./pager";
+import { IntroStage } from "./intro-stage";
 import { DataStage } from "./data-stage";
 import { TrainingStage } from "./training-stage";
 import { ResultsStage } from "./results-stage";
@@ -24,7 +25,11 @@ export const STAGES = [
 
 export type StageKey = (typeof STAGES)[number]["key"];
 
-const stageIndex = (key: string | null) => STAGES.findIndex((s) => s.key === key);
+// The track: the intro poster first, then the four stages.
+const SLIDES = [{ key: "intro", label: "Intro" }, ...STAGES] as const;
+
+const slideIndex = (key: string | null) => SLIDES.findIndex((s) => s.key === key);
+const DATA = slideIndex("data");
 
 // Arrow keys page between stages unless something focused uses them itself.
 const OWNS_ARROW_KEYS =
@@ -32,27 +37,30 @@ const OWNS_ARROW_KEYS =
 
 type HistoryMode = "push" | "replace" | "none";
 
-/** Points the address bar at a run and stage without navigating. */
-function writeUrl(runId: string | null, stage: number, mode: Exclude<HistoryMode, "none">) {
+/**
+ * Points the address bar at a run and slide without navigating. The bare
+ * address is the intro; every other slide names itself, run or not, so a
+ * reload stays put.
+ */
+function writeUrl(runId: string | null, slide: number, mode: Exclude<HistoryMode, "none">) {
   const url = new URL(window.location.href);
-  if (runId) {
-    url.searchParams.set("run", runId);
-    url.searchParams.set("stage", STAGES[stage].key);
-  } else {
-    url.searchParams.delete("run");
-    url.searchParams.delete("stage");
-  }
+  const key = SLIDES[slide].key;
+  if (runId) url.searchParams.set("run", runId);
+  else url.searchParams.delete("run");
+  if (runId || key !== "intro") url.searchParams.set("stage", key);
+  else url.searchParams.delete("stage");
   if (url.href === window.location.href) return;
   if (mode === "push") window.history.pushState(null, "", url);
   else window.history.replaceState(null, "", url);
 }
 
 /**
- * The whole app on one page. Each stage is a page of cards; the pages sit side
- * by side in a horizontally snapping track, so moving between stages slides the
- * track instead of loading a route. Every stage stays mounted, which keeps form
- * state and polling alive while you look at another one. Each move is a history
- * entry, so the browser's back and forward buttons step through stages.
+ * The whole app on one page. An intro poster comes first, then each stage is a
+ * page of cards; the slides sit side by side in a horizontally snapping track,
+ * so moving between them slides the track instead of loading a route. Every
+ * slide stays mounted, which keeps form state and polling alive while you look
+ * at another one. Each move is a history entry, so the browser's back and
+ * forward buttons step through them.
  */
 export function Dashboard() {
   const [runId, setRunId] = useState<string | null>(null);
@@ -74,7 +82,7 @@ export function Dashboard() {
   const landedFor = useRef<string | null>(null);
 
   const goTo = useCallback((index: number, opts: { instant?: boolean; history?: HistoryMode; focus?: boolean } = {}) => {
-    const i = Math.max(0, Math.min(STAGES.length - 1, index));
+    const i = Math.max(0, Math.min(SLIDES.length - 1, index));
     const moved = i !== activeRef.current;
     activeRef.current = i;
     setActive(i);
@@ -90,7 +98,7 @@ export function Dashboard() {
 
   // Buttons inside a stage move focus into the stage they open; the one they
   // were in turns inert, which would otherwise drop focus on the floor.
-  const goToStage = useCallback((key: StageKey) => goTo(stageIndex(key), { focus: true }), [goTo]);
+  const goToStage = useCallback((key: StageKey) => goTo(slideIndex(key), { focus: true }), [goTo]);
 
   useEffect(() => {
     if (focusStage.current !== active) return;
@@ -105,29 +113,34 @@ export function Dashboard() {
     setSession((s) => s + 1);
   }, []);
 
-  // Deep links: /?run=<id>&stage=<key>. The legacy /<id>/<page> routes redirect here.
+  // Deep links: /?run=<id>&stage=<key>, where the key is intro or a stage. The
+  // bare address opens the intro. The legacy /<id>/<page> routes redirect here.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const linkedRun = params.get("run");
-    const linkedStage = stageIndex(params.get("stage"));
+    const linkedSlide = slideIndex(params.get("stage"));
     if (linkedRun) {
       runIdRef.current = linkedRun;
       setRunId(linkedRun);
     }
-    if (linkedStage >= 0) {
+    if (linkedSlide >= 0) {
       landedFor.current = linkedRun;
-      goTo(linkedStage, { instant: true, history: "replace" });
+      goTo(linkedSlide, { instant: true, history: "replace" });
+    } else if (linkedRun) {
+      // Until the run says where it has got to, it waits on Data, which every
+      // run has reached and which says so if the run can't be loaded.
+      goTo(DATA, { instant: true, history: "none" });
     }
     setReady(true);
   }, [goTo]);
 
-  // Back and forward: follow the address bar to its run and stage.
+  // Back and forward: follow the address bar to its run and slide.
   useEffect(() => {
     const onPop = () => {
       const params = new URLSearchParams(window.location.search);
       const linkedRun = params.get("run");
       if (linkedRun !== runIdRef.current) adoptRun(linkedRun);
-      goTo(Math.max(0, stageIndex(params.get("stage"))), { history: "none" });
+      goTo(Math.max(0, slideIndex(params.get("stage"))), { history: "none" });
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -137,7 +150,7 @@ export function Dashboard() {
   useEffect(() => {
     if (!runId || !run.status || landedFor.current === runId) return;
     landedFor.current = runId;
-    goTo(stageIndex(landingStage(run.status)), { instant: true, history: "replace" });
+    goTo(slideIndex(landingStage(run.status)), { instant: true, history: "replace" });
   }, [runId, run.status, goTo]);
 
   // Swipes and trackpad scrolls settle on a page; adopt it once they stop.
@@ -209,15 +222,15 @@ export function Dashboard() {
   );
 
   const newRun = useCallback(() => {
-    writeUrl(null, 0, "push");
+    writeUrl(null, DATA, "push");
     adoptRun(null);
-    goTo(0, { history: "none" });
+    goTo(DATA, { history: "none" });
   }, [adoptRun, goTo]);
 
   // A run picked from the account opens wherever it has got to, as its link would.
   const openRun = useCallback(
     (id: string, status: RunStatus) => {
-      const stage = stageIndex(landingStage(status));
+      const stage = slideIndex(landingStage(status));
       if (id === runIdRef.current) return goTo(stage);
       writeUrl(id, stage, "push");
       adoptRun(id);
@@ -249,19 +262,20 @@ export function Dashboard() {
           ref={trackRef}
           className="no-scrollbar flex h-full snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-x-contain"
         >
-          {STAGES.map((stage, i) => (
+          {SLIDES.map((stage, i) => (
             <section
               key={stage.key}
               ref={(el) => {
                 sectionRefs.current[i] = el;
               }}
               id={`stage-${stage.key}`}
-              aria-label={`${stage.label} stage`}
+              aria-label={stage.key === "intro" ? "Intro" : `${stage.label} stage`}
               tabIndex={-1}
               inert={i !== active}
               className="h-full w-full shrink-0 snap-start snap-always overflow-y-auto overscroll-y-contain outline-none @container-size/page"
             >
               <div className="mx-auto flex min-h-full w-full max-w-[120rem] flex-col p-3 sm:p-4 lock:h-full">
+                {stage.key === "intro" && <IntroStage onStart={() => goToStage("data")} />}
                 {stage.key === "data" && (
                   <DataStage
                     key={session}

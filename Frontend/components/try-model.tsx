@@ -110,7 +110,9 @@ export function TryModel({
         </div>
 
         {mode === "form" ? (
-          <div className="@container -me-1 max-h-[26rem] min-h-0 flex-1 overflow-y-auto pe-1 lock:max-h-none">
+          // As tall as its fields, so Predict sits right under them; a long
+          // form scrolls instead of pushing it off the card.
+          <div className="@container -me-1 max-h-[26rem] min-h-0 overflow-y-auto pe-1 lock:max-h-none">
             <div className="grid gap-3 @md:grid-cols-2 @2xl:grid-cols-3">
               {schema.feature_cols.map((c) => (
                 <Field key={c} className="gap-1.5">

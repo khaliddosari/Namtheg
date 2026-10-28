@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, House } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -13,10 +13,14 @@ const TONE_WORD: Record<Tone, string> = {
   malfunction: "needs attention",
 };
 
+const ITEM =
+  "flex h-10 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 sm:gap-2 sm:px-3 lg:h-8 aria-[current=step]:bg-primary/15 aria-[current=step]:text-primary aria-[current=step]:ring-1 aria-[current=step]:ring-primary/35 aria-[current=step]:ring-inset";
+
 /**
- * The stage switcher under the track: previous and next, and one button per
- * stage with its number, name and a status dot. It slides the track; nothing
- * reloads.
+ * The slide switcher under the track: previous and next, a button for the
+ * intro, then one button per stage with its number, name and a status dot.
+ * Slide 0 is the intro and stage i is slide i + 1. It slides the track;
+ * nothing reloads. On phones only the current stage spells out its name.
  */
 export function Pager({
   stages,
@@ -27,7 +31,7 @@ export function Pager({
   active: number;
   onSelect: (index: number) => void;
 }) {
-  const last = stages.length - 1;
+  const last = stages.length;
 
   return (
     <nav
@@ -52,25 +56,43 @@ export function Pager({
         <TooltipContent>Previous stage</TooltipContent>
       </Tooltip>
 
-      <ol className="flex min-w-0 items-center gap-0.5 rounded-xl sm:gap-1 bg-muted p-1 ring-1 ring-(--glass-edge)">
-        {stages.map((s, i) => (
-          <li key={s.key}>
-            <button
-              type="button"
-              onClick={() => onSelect(i)}
-              aria-current={i === active ? "step" : undefined}
-              aria-label={`${s.label}, ${TONE_WORD[s.tone]}`}
-              className={cn(
-                "flex h-10 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 sm:gap-2 sm:px-3 lg:h-8",
-                "aria-[current=step]:bg-primary/15 aria-[current=step]:text-primary aria-[current=step]:ring-1 aria-[current=step]:ring-primary/35 aria-[current=step]:ring-inset"
-              )}
+      <ol className="flex min-w-0 items-center gap-0.5 rounded-xl bg-muted p-1 ring-1 ring-(--glass-edge) sm:gap-1">
+        <li>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={() => onSelect(0)}
+                  aria-current={active === 0 ? "step" : undefined}
+                  aria-label="Intro"
+                  className={cn(ITEM, "sm:px-2.5 [&_svg]:size-4")}
+                />
+              }
             >
-              <span className="hidden font-mono text-xs tabular-nums sm:inline">{String(i + 1).padStart(2, "0")}</span>
-              <span>{s.label}</span>
-              <StatusDot tone={s.tone} />
-            </button>
-          </li>
-        ))}
+              <House aria-hidden="true" />
+            </TooltipTrigger>
+            <TooltipContent>What Namtheg does</TooltipContent>
+          </Tooltip>
+        </li>
+        {stages.map((s, i) => {
+          const current = i + 1 === active;
+          return (
+            <li key={s.key}>
+              <button
+                type="button"
+                onClick={() => onSelect(i + 1)}
+                aria-current={current ? "step" : undefined}
+                aria-label={`${s.label}, ${TONE_WORD[s.tone]}`}
+                className={ITEM}
+              >
+                <span className="tabular-nums">{i + 1}</span>
+                <span className={cn(!current && "hidden sm:inline")}>{s.label}</span>
+                <StatusDot tone={s.tone} />
+              </button>
+            </li>
+          );
+        })}
       </ol>
 
       <Tooltip>
@@ -90,7 +112,6 @@ export function Pager({
         </TooltipTrigger>
         <TooltipContent>Next stage</TooltipContent>
       </Tooltip>
-
     </nav>
   );
 }

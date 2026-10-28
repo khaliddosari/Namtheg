@@ -96,8 +96,10 @@ export function DeployStage({
     />
   );
 
+  // Locked: the deployment's facts at their own height, sharing below it, and
+  // trying the model in the big area. On phones, trying it comes before sharing.
   return (
-    <div className="grid flex-1 gap-3 md:grid-cols-2 lock:h-full lock:grid-cols-12 lock:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="grid flex-1 gap-3 md:grid-cols-2 lock:h-full lock:grid-cols-12 lock:grid-rows-[auto_minmax(0,1fr)]">
       {/* Deployment */}
       <Panel
         title="Deployment"
@@ -172,44 +174,11 @@ export function DeployStage({
         )}
       </Panel>
 
-      {/* Share */}
-      <Panel
-        title="Share"
-        caption="A public test page anyone can open, no account needed"
-        className="lock:col-span-4 lock:col-start-1 lock:row-start-2"
-      >
-        {loading ? (
-          <PanelSkeleton rows={3} />
-        ) : !trained ? (
-          notTrained
-        ) : !deployed || !runId ? (
-          <PanelEmpty icon={<QrCode />} title="Deploy to share" description="A QR code and a public test page link appear once the model is live." />
-        ) : (
-          <div className="flex min-h-0 flex-wrap items-center gap-4">
-            {shareUrl && (
-              <div className="shrink-0 rounded-xl bg-foreground p-2 text-background">
-                <QRCode value={shareUrl} size={128} fgColor="currentColor" bgColor="transparent" level="M" className="size-28 lock-short:size-24" viewBox="0 0 256 256" />
-              </div>
-            )}
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <p className="truncate font-mono text-xs text-muted-foreground" dir="ltr" title={shareUrl}>
-                {shareUrl}
-              </p>
-              <CopyButton text={shareUrl} label="Copy share link" done="Share link copied" showLabel />
-              <a href={`/share/${runId}`} target="_blank" rel="noopener noreferrer" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 lg:h-7")}>
-                <ExternalLink data-icon="inline-start" />
-                Open the test page
-              </a>
-            </div>
-          </div>
-        )}
-      </Panel>
-
       {/* Try the model */}
       <Panel
         title="Try the model"
         caption={deployed ? "Pre-filled with a sample row. Change any value to see how the prediction moves." : "Live predictions from the deployed endpoint"}
-        className="md:row-span-2 md:row-start-1 md:col-start-2 lock:col-span-8 lock:col-start-5 lock:row-span-2 lock:row-start-1"
+        className="md:col-start-2 md:row-span-2 md:row-start-1 lock:col-span-8 lock:col-start-5 lock:row-span-2 lock:row-start-1"
       >
         {loading ? (
           <PanelSkeleton rows={6} />
@@ -223,6 +192,48 @@ export function DeployStage({
           />
         ) : (
           <TryModel runId={runId} schema={schema} variant="full" layout="split" />
+        )}
+      </Panel>
+
+      {/* Share */}
+      <Panel
+        title="Share"
+        caption="A public test page anyone can open, no account needed"
+        className="lock:col-span-4 lock:col-start-1 lock:row-start-2"
+      >
+        {loading ? (
+          <PanelSkeleton rows={3} />
+        ) : !trained ? (
+          notTrained
+        ) : !deployed || !runId ? (
+          <PanelEmpty icon={<QrCode />} title="Deploy to share" description="A QR code and a public test page link appear once the model is live." />
+        ) : (
+          // Side by side on a short page; on a tall one the code grows and centres.
+          <div className="flex min-h-0 flex-1 flex-wrap items-center gap-4 lock:flex-col lock:flex-nowrap lock:justify-center lock-short:flex-row">
+            {shareUrl && (
+              <div className="shrink-0 rounded-xl bg-foreground p-2 text-background">
+                <QRCode
+                  value={shareUrl}
+                  size={128}
+                  fgColor="currentColor"
+                  bgColor="transparent"
+                  level="M"
+                  className="size-28 lock:size-40 lock-short:size-24"
+                  viewBox="0 0 256 256"
+                />
+              </div>
+            )}
+            <div className="flex min-w-0 flex-1 flex-col gap-2 lock:w-full lock:max-w-sm lock:flex-none lock-short:flex-1">
+              <p className="truncate font-mono text-xs text-muted-foreground lock:text-center lock-short:text-start" dir="ltr" title={shareUrl}>
+                {shareUrl}
+              </p>
+              <CopyButton text={shareUrl} label="Copy share link" done="Share link copied" showLabel />
+              <a href={`/share/${runId}`} target="_blank" rel="noopener noreferrer" className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 lg:h-7")}>
+                <ExternalLink data-icon="inline-start" />
+                Open the test page
+              </a>
+            </div>
+          </div>
         )}
       </Panel>
     </div>

@@ -310,7 +310,7 @@ def diagnostics(rid: str):
     if not r:
         return err(404, "run_id not found")
     q = r.get("queued_at")
-    return {"status": r["status"], "stage": r.get("stage"), "task": r.get("task"), "gpu": "NVIDIA H200 (requested)",
+    return {"status": r["status"], "stage": r.get("stage"), "task": r.get("task"), "gpu": "NVIDIA H200",
             "gpu_calls": 2 if r["status"] != "queued" else 0, "elapsed_seconds": round(time.time() - q) if q else None}
 
 

@@ -23,7 +23,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatArabicBrand } from "@/components/brand";
+import { Brand, BrandMark, formatArabicBrand } from "@/components/brand";
 import { Fact, Meter, Panel, PanelEmpty, PanelError, PanelSkeleton } from "@/components/panel";
 import { Segmented } from "@/components/segmented";
 import { isRunFailed, type RunState } from "./use-run";
@@ -70,9 +70,20 @@ export function ResultsStage({
       />
     );
 
+  // The export lays the cards out as a document instead (see report-export.ts):
+  // data-export-span is each card's width out of twelve there. The plot and
+  // the feature importances share a row; the plot is square, so its share
+  // follows the length of the list beside it and the two come out level.
+  const featureCount = Math.min(10, result?.extra?.top_features?.length ?? 0);
+  const plotSpan = featureCount >= 9 ? 6 : featureCount >= 6 ? 5 : 4;
+
   return (
     <div ref={reportRef} className="flex flex-1 flex-col @container/report lock:h-full">
-      <div className="grid flex-1 gap-3 @3xl/report:grid-cols-2 @5xl/report:grid-cols-12 lock:h-full lock:grid-rows-[auto_minmax(0,1fr)]">
+      {result && runId && <ReportHeader runId={runId} result={result} filename={status?.filename} />}
+      <div
+        data-export-grid
+        className="grid flex-1 gap-3 @3xl/report:grid-cols-2 @5xl/report:grid-cols-12 lock:h-full lock:grid-rows-[auto_minmax(0,1fr)]"
+      >
         <ChampionPanel
           result={result}
           failed={failed}
@@ -85,11 +96,46 @@ export function ResultsStage({
         />
         <ScorePanel result={result} empty={empty(<ChartColumn />, "No score yet")} />
         <FilesPanel runId={runId} result={result} waiting={waiting} reportRef={reportRef} goToStage={goToStage} />
-        <PlotPanel runId={runId} result={result} empty={waiting ? <PanelSkeleton rows={0} block /> : empty(<ScanSearch />, "No plot yet")} />
-        <FeaturesPanel result={result} empty={empty(<SlidersHorizontal />, "No features yet", 6)} />
+        <PlotPanel
+          runId={runId}
+          result={result}
+          empty={waiting ? <PanelSkeleton rows={0} block /> : empty(<ScanSearch />, "No plot yet")}
+          exportSpan={plotSpan}
+        />
+        <FeaturesPanel result={result} empty={empty(<SlidersHorizontal />, "No features yet", 6)} exportSpan={12 - plotSpan} />
         <ModelsPanel result={result} empty={empty(<ListOrdered />, "No models compared yet", 6)} />
       </div>
     </div>
+  );
+}
+
+/* ─── Report header (only the export shows it) ───────────────────────── */
+
+function ReportHeader({ runId, result, filename }: { runId: string; result: RunResult; filename?: string }) {
+  const about = ["Model report", filename, result.target && `predicting ${result.target}`, result.problem_type].filter(Boolean).join(" · ");
+  return (
+    <header hidden data-export-show className="mb-3 flex items-center gap-4 rounded-2xl bg-card px-5 py-4 shadow-(--glass-shadow) ring-1 ring-(--glass-edge)">
+      <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 ring-1 ring-primary/25">
+        <BrandMark className="size-7" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="flex items-baseline gap-2.5 text-2xl font-bold">
+          <Brand />
+          <span>Namtheg</span>
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">{about}</p>
+      </div>
+      <dl className="shrink-0 text-xs text-muted-foreground">
+        <div className="flex justify-end gap-1.5">
+          <dt>Run</dt>
+          <dd className="font-mono text-foreground">{runId}</dd>
+        </div>
+        <div className="mt-1 flex justify-end gap-1.5">
+          <dt>Exported</dt>
+          <dd data-export-date className="text-foreground" />
+        </div>
+      </dl>
+    </header>
   );
 }
 
@@ -124,7 +170,7 @@ function ChampionPanel({
     <Panel
       title="Champion model"
       caption={result?.target ? `Predicting ${result.target}` : "The model the pipeline picked, and why"}
-      data-export-span="9"
+      data-export-span="8"
       className="@3xl/report:col-span-2 @5xl/report:col-span-5"
     >
       {result ? (
@@ -134,7 +180,7 @@ function ChampionPanel({
               <Trophy className="size-5" />
             </span>
             <div className="min-w-0">
-              <p className="truncate font-mono text-xl font-bold" title={modelName}>
+              <p className="font-mono text-lg font-bold sm:text-xl lock:truncate" title={modelName}>
                 {modelName}
               </p>
               {facts && <p className="truncate text-xs text-muted-foreground capitalize">{facts}</p>}
@@ -211,6 +257,7 @@ function ScorePanel({ result, empty }: { result: RunResult | null; empty: React.
     <Panel
       title={result ? info.short : "Score"}
       caption={result ? info.long : "The selection metric on held-out data"}
+      data-export-span="4"
       className="@5xl/report:col-span-3"
     >
       {result ? (
@@ -261,7 +308,7 @@ function FilesPanel({
     const name = `namtheg-${runId}-report.${kind}`;
     try {
       if (kind === "png") await exportReportPng(reportRef.current, name);
-      else await exportReportPdf(reportRef.current, name);
+      else await exportReportPdf(reportRef.current, name, `Namtheg model report: ${result?.model_name ?? "champion"} for ${result?.target ?? runId}`);
       toast.add({ title: `Report saved as ${kind.toUpperCase()}`, description: name, type: "success" });
     } catch (e) {
       console.warn(`${kind.toUpperCase()} export failed`, e);
@@ -320,7 +367,17 @@ function FilesPanel({
 
 /* ─── Plot ───────────────────────────────────────────────────────────── */
 
-function PlotPanel({ runId, result, empty }: { runId: string | null; result: RunResult | null; empty: React.ReactNode }) {
+function PlotPanel({
+  runId,
+  result,
+  empty,
+  exportSpan,
+}: {
+  runId: string | null;
+  result: RunResult | null;
+  empty: React.ReactNode;
+  exportSpan: number;
+}) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const plot = PLOT_TITLES[result?.problem_type ?? "regression"] ?? PLOT_TITLES.regression;
@@ -332,11 +389,12 @@ function PlotPanel({ runId, result, empty }: { runId: string | null; result: Run
       caption={result ? plot.caption : "How the champion does on held-out data"}
       actions={
         result && !failed ? (
-          <Button variant="ghost" size="icon-sm" aria-label="Zoom the plot" onClick={() => setOpen(true)} data-export-ignore>
+          <Button variant="ghost" size="icon-sm" aria-label="Zoom the plot" onClick={() => setOpen(true)} data-export-ignore className="size-9 lg:size-7">
             <ZoomIn />
           </Button>
         ) : undefined
       }
+      data-export-span={exportSpan}
       className="@5xl/report:col-span-4"
     >
       {result && runId ? (
@@ -348,7 +406,7 @@ function PlotPanel({ runId, result, empty }: { runId: string | null; result: Run
               type="button"
               onClick={() => setOpen(true)}
               aria-label="Open the plot larger"
-              className="relative flex min-h-64 flex-1 cursor-zoom-in items-center justify-center overflow-hidden rounded-xl bg-background/40 ring-1 ring-border outline-none focus-visible:ring-3 focus-visible:ring-ring/50 lock:min-h-0"
+              className="relative flex aspect-square w-full flex-1 cursor-zoom-in items-center justify-center overflow-hidden rounded-xl bg-background/40 ring-1 ring-border outline-none focus-visible:ring-3 focus-visible:ring-ring/50 lock:aspect-auto lock:min-h-0"
             >
               {/* eslint-disable-next-line @next/next/no-img-element -- backend-generated PNG */}
               <img src={src} alt={`${plot.title} for ${result.model_name ?? "the champion model"}`} onError={() => setFailed(true)} className="h-full w-full object-contain" />
@@ -374,7 +432,7 @@ function PlotPanel({ runId, result, empty }: { runId: string | null; result: Run
 
 /* ─── Feature importance ─────────────────────────────────────────────── */
 
-function FeaturesPanel({ result, empty }: { result: RunResult | null; empty: React.ReactNode }) {
+function FeaturesPanel({ result, empty, exportSpan }: { result: RunResult | null; empty: React.ReactNode; exportSpan: number }) {
   const features = (result?.extra?.top_features ?? []).slice(0, 10);
   const max = Math.max(0, ...features.map((f) => f.importance));
 
@@ -382,6 +440,7 @@ function FeaturesPanel({ result, empty }: { result: RunResult | null; empty: Rea
     <Panel
       title="Feature importance"
       caption={features.length ? `Top ${features.length} features by importance` : "Which columns drive the prediction"}
+      data-export-span={exportSpan}
       className="@5xl/report:col-span-3"
     >
       {!result ? (
@@ -427,6 +486,7 @@ function ModelsPanel({ result, empty }: { result: RunResult | null; empty: React
             : "Only the champion was trained"
           : "Every candidate ranked, then the champion tuned"
       }
+      data-export-span="12"
       className="@3xl/report:col-span-2 @5xl/report:col-span-5"
     >
       {!result ? (

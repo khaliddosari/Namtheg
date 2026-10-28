@@ -461,7 +461,8 @@ function AccountDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <section aria-labelledby={headingId} className="space-y-2">
+        {/* min-w-0: a grid item otherwise widens to its longest line and runs off a phone. */}
+        <section aria-labelledby={headingId} className="min-w-0 space-y-2">
           <h3 id={headingId} className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
             My runs
           </h3>
@@ -537,7 +538,7 @@ function RunRow({ run, onOpen }: { run: MyRun; onOpen: () => void }) {
           {status.label}
         </span>
       </span>
-      <span className="truncate text-xs text-muted-foreground">{details}</span>
+      <span className="text-xs text-muted-foreground sm:truncate">{details}</span>
     </button>
   );
 }

@@ -646,7 +646,8 @@ a, button, input, label, select, [role="tab"], [role="combobox"], [role="option"
   --accent: oklch(0.8 0.08 245 / 0.14);
   --accent-foreground: oklch(0.96 0.015 245);
 
-  --destructive: oklch(0.7 0.19 22);
+  /* Light enough for 4.5:1 on its own tint over a dialog, the darkest place it sits. */
+  --destructive: oklch(0.74 0.17 22);
 
   --border: oklch(0.85 0.04 255 / 0.13);
   --input: oklch(0.85 0.04 255 / 0.2);
@@ -730,6 +731,12 @@ a, button, input, label, select, [role="tab"], [role="combobox"], [role="option"
 /* a locked page on a short laptop window, where captions give up space first */
 @custom-variant lock-short {
   @container page (min-width: 72rem) and (min-height: 34rem) and (max-height: 44rem) {
+    @slot;
+  }
+}
+/* a locked page with room to spare, a large desktop window, where the intro poster grows */
+@custom-variant lock-roomy {
+  @container page (min-width: 100rem) and (min-height: 50rem) {
     @slot;
   }
 }

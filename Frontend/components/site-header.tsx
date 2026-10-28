@@ -1,7 +1,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { Brand, BrandMark } from "./brand";
+import { Brand } from "./brand";
 
 const AUTHORS = [
   { first: "Khalid", full: "Khalid Al Dosari", href: "https://www.linkedin.com/in/khalid-al-dosari/" },
@@ -19,14 +19,9 @@ function LinkedInGlyph({ className }: { className?: string }) {
 
 function BrandLockup() {
   return (
-    <>
-      <span className="text-xl">
-        <Brand />
-      </span>
-      <span className="hidden size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/25 sm:flex">
-        <BrandMark />
-      </span>
-    </>
+    <span className="text-xl">
+      <Brand />
+    </span>
   );
 }
 
@@ -66,7 +61,7 @@ export function SiteHeader({ start, onBrandClick }: { start?: React.ReactNode; o
 
       <div className="flex min-w-0 items-center justify-end">
         {onBrandClick ? (
-          <button type="button" onClick={onBrandClick} aria-label="Namtheg, back to the first stage" className={brandClass}>
+          <button type="button" onClick={onBrandClick} aria-label="Namtheg, back to the intro" className={brandClass}>
             <BrandLockup />
           </button>
         ) : (
